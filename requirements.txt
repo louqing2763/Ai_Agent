@@ -1,0 +1,5 @@
+python-telegram-bot[job-queue]
+openai
+requests
+pytz
+duckduckgo-search
