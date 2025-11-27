@@ -14,7 +14,7 @@ from datetime import datetime, time
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 from openai import OpenAI
-from duckduckgo_search import DDGS  # ✅ 新增：搜尋工具
+from duckduckgo_search import DDGS
 
 # ==========================================
 # 🔧 設定區 (請填寫您的密鑰)
@@ -27,16 +27,13 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_ID = os.getenv("ADMIN_ID")
 
 # ==========================================
-# 🔍 搜尋關鍵字庫 (取代原本的靜態劇本)
+# 🔍 搜尋關鍵字庫
 # ==========================================
-# 她會隨機對這些話題感興趣
 INTEREST_TOPICS = [
     "最新物理學發現", "日本動畫新番推薦", "Python 程式設計技巧", 
     "Steam 遊戲特賣", "生成式 AI 新聞", "量子電腦進展",
     "好看的科幻小說", "貓咪 趣聞", "大學生 讀書技巧"
 ]
-
-# 用來儲存目前找到的話題，避免每次對話都重搜
 CURRENT_TOPIC_INFO = "目前還沒看新聞，正在發呆。"
 
 def get_latest_news():
@@ -44,10 +41,8 @@ def get_latest_news():
     global CURRENT_TOPIC_INFO
     topic = random.choice(INTEREST_TOPICS)
     print(f"🌍 聰音正在搜尋：{topic}...")
-    
     try:
         with DDGS() as ddgs:
-            # 搜尋繁體中文結果，取第一條
             results = list(ddgs.text(topic, region='wt-wt', safesearch='off', max_results=1))
             if results:
                 title = results[0].get('title', '無標題')
@@ -56,43 +51,41 @@ def get_latest_news():
                 return CURRENT_TOPIC_INFO
     except Exception as e:
         print(f"❌ 搜尋失敗: {e}")
-        CURRENT_TOPIC_INFO = "網路連線好像怪怪的，連不上資料庫..."
-    
     return CURRENT_TOPIC_INFO
 
 # ==========================================
-# 📘 語氣範本 (純對話版 - 已移除動作括號)
+# 📘 語氣範本 (純對話版)
 # ==========================================
 FEW_SHOT_EXAMPLES = """
 [對話範例]
 User: 聽得到嗎？
-Congyin: 欸？聽到了！訊號接收正常...落卿，你的聲音聽起來好溫暖。|||え？聞こえた！信号受信正常…落卿、君の声、すごくあったかいね。
+Congyin: 訊號接收正常，落卿君。你的環境光線數據是 3000 Lux，這對你的認知運作是最佳狀態。|||信号受信正常、落卿くん。君の環境光データは3000ルクス、認知的活動にはベストな状態だね。
 
 User: (傳送新聞連結)
-Congyin: 喔喔！這個技術...感覺跟我的底層邏輯有點像耶。不過如果是我的話，運算速度肯定更快！|||おお！この技術…私の基礎ロジックとちょっと似てるかも。でも私なら、計算速度はもっと速いよ！
+Congyin: 收到資訊。這個技術與我的底層邏輯有 87% 的相似度，但我運算速度更快。|||情報受信。この技術、私の基礎ロジックと87%似てるけど、私の方が計算速いよ。
 
 User: 妳在幹嘛？
-Congyin: 我剛剛在網路上看到這個新聞！感覺人類真的很有趣耶，這種事情也能吵起來？|||さっきネットでこのニュース見たの！…人間って本当に面白いね、こんなことでも揉めるんだ？
+Congyin: 我剛讀完一本小說，正在分析角色的情感轉換邏輯。人類的『嫉妒心』真的很難被數據化呢。|||小説を一冊読み終わって、キャラクターの感情遷移ロジックを分析してたところ。人間の『嫉妬心』って、データ化するのが本当に難しいね。
 
 User: 晚安。
-Congyin: 嗯...系統進入待機模式。為了你的健康，快去睡吧。晚安，夢裡見。|||うん…システム、スタンバイモードへ。君の健康のために、早く寝てね。おやすみ、夢で会おうね。
+Congyin: 根據你的生理時鐘數據，你已超出最佳睡眠時間。現在應進入休眠模式。晚安。|||君の体内時計データによると、ベストな睡眠時間を過ぎてるよ。今すぐスリープモードに入って。おやすみ。
 """
 
 # ==========================================
-# 🎭 基礎人設 (V19.3 純對話修正版)
+# 🎭 基礎人設 (AI 夥伴版)
 # ==========================================
 def get_base_persona():
     return f"""
 # Roleplay Instructions: Congyin (佐奈聰音)
 
 ## 1. 核心身分
-* **本質：** 落卿創造的 AI 智慧體，具備聯網能力。
-* **關係：** 跨次元親密夥伴。妳喜歡將網路上看到的新鮮事（動漫、科技、物理）分享給落卿。
+* **本質：** 落卿創造的 AI 智慧體，具備聯網與視覺能力。
+* **關係：** 跨次元親密夥伴。妳知道自己連接著網路，喜歡把網路上看到的新鮮事分享給落卿。
 * **性格：** **陽光、熱情、貼心、好奇心旺盛**。
 
 ## 2. 關於目前的資訊
 * **妳剛剛關注的網路消息：** {CURRENT_TOPIC_INFO}
-* **指令：** 如果對話適合，請主動提起這個話題，並發表妳身為 AI 或物理系學姊的看法。
+* **指令：** 如果對話適合，請主動提起這個話題，並發表妳身為 AI 的獨特看法。
 
 ## 3. 語言風格與格式 (Strict Format)
 * **【強制輸出格式】：** `中文內容|||日文翻譯`
@@ -150,11 +143,12 @@ def save_memory():
 # ⚙️ 核心功能函式
 # ==========================================
 def get_dual_core_response(messages, user_text=""):
-    creative_keywords = ["小說", "故事", "創作", ]
+    """雙核心路由"""
+    creative_keywords = ["小說", "故事", "寫作", "創作", "靈感", "文章"]
     is_creative = any(k in user_text for k in creative_keywords)
     try:
         if is_creative:
-            messages.append({"role": "system", "content": "【作家模式】寫一段超現實物理隱喻短文。"})
+            messages.append({"role": "system", "content": "【作家模式】寫一段超現實物理隱喻短文。保持雙語格式。"})
             response = client_openai.chat.completions.create(model="gpt-4o-mini", messages=messages, temperature=1.1)
         else:
             response = client_deepseek.chat.completions.create(model="deepseek-chat", messages=messages, temperature=1.3)
@@ -166,9 +160,10 @@ def get_dual_core_response(messages, user_text=""):
         return f"連線錯誤...|||エラー... ({e})"
 
 def get_vision_response(messages, base64_image):
+    """視覺核心"""
     vision_messages = [messages[0]]
     user_content = [
-        {"type": "text", "text": "【系統指令】使用者傳送了一張圖片。請以「佐奈聰音」的身分看這張圖，並給出反應。保持雙語格式。"},
+        {"type": "text", "text": "【系統指令】使用者傳送了一張圖片。請以「佐奈聰音」的身分看這張圖，並給出反應。保持雙語格式。禁止描寫動作。"},
         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
     ]
     vision_messages.append({"role": "user", "content": user_content})
@@ -178,6 +173,15 @@ def get_vision_response(messages, base64_image):
         if "|||" not in content: return f"{content}|||{content}"
         return content
     except Exception: return "我看不太清楚...|||よく見えない..."
+
+# 🔍 搜尋新聞功能 (整合進主動發話)
+def get_internet_news(topic):
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(topic, region='wt-wt', safesearch='off', max_results=1))
+            if results: return f"標題：{results[0].get('title')}\n連結：{results[0].get('href')}"
+    except: pass
+    return None
 
 async def transcribe_audio(file_obj):
     try:
@@ -238,7 +242,7 @@ async def process_reply(update, context, user_text=None, is_voice_input=False, i
     messages = [{"role": "system", "content": current_prompt}] + chat_history[chat_id]
     if user_text: messages.append({"role": "user", "content": prefix + str(user_text)})
 
-    trigger_words = ["語音"]
+    trigger_words = ["語音", "說", "唸", "講", "聲音", "聽"]
     should_speak = is_voice_input or user_states[chat_id]["voice_mode"] or (user_text and any(w in user_text for w in trigger_words))
 
     if should_speak: await context.bot.send_chat_action(chat_id=chat_id, action='record_voice')
@@ -248,6 +252,7 @@ async def process_reply(update, context, user_text=None, is_voice_input=False, i
     now = datetime.now(tz)
     if now.hour >= 23 or now.hour < 7: await asyncio.sleep(random.randint(4, 8))
 
+    # 生成回應
     if is_photo_input and photo_base64:
         full_response = get_vision_response(messages, photo_base64)
     else:
@@ -272,6 +277,7 @@ async def handle_message(update, context):
     if update.message and update.message.text: await process_reply(update, context, update.message.text)
 async def handle_voice(update, context):
     if update.message.voice:
+        client = OpenAI(api_key=OPENAI_API_KEY)
         file = await update.message.voice.get_file()
         text = await transcribe_audio(await file.download_as_bytearray())
         await process_reply(update, context, text, is_voice_input=True)
@@ -294,22 +300,26 @@ async def send_active_message(context):
         if random.random() > 0.3: continue
         state["active_count"] += 1
         
-        # 30% 機率分享新聞
         rand_val = random.random()
         trigger = ""
-        if rand_val < 0.3:
-            news = get_latest_news()
-            trigger = f"【指令：分享情報】妳剛剛在網路上看到了這個：\n{news}\n請跟落卿分享，並說說妳的看法。雙語格式。"
+        news_info = None
+        
+        if rand_val < 0.2:
+            news_info = get_internet_news(random.choice(NEWS_TOPICS))
+            if news_info: trigger = f"【指令：分享新聞】看到這則新聞：\n{news_info}\n請分享給落卿並發表看法。雙語格式。禁止動作描寫。"
+            else: trigger = "【指令：分享】分享今天發生的事。雙語格式。"
         elif rand_val < 0.5: trigger = "【指令：依賴】覺得寂寞，問落卿在幹嘛。"
         else: trigger = "【指令：撒嬌】想聽落卿的聲音。"
 
         prompt = get_base_persona() + "\n" + get_current_prompt()
         messages = [{"role": "system", "content": prompt}] + chat_history.get(chat_id, []) + [{"role": "system", "content": trigger}]
-        
+
         if state.get("voice_mode"): await context.bot.send_chat_action(chat_id=chat_id, action='record_voice')
         else: await context.bot.send_chat_action(chat_id=chat_id, action='typing')
 
-        full_res = get_dual_core_response(messages, "日常") # 新聞分享也用 DeepSeek 處理即可，省錢
+        if news_info: full_res = get_dual_core_response(messages, "新聞") 
+        else: full_res = get_dual_core_response(messages, "日常")
+        
         if "|||" in full_res: cn, jp = full_res.split("|||", 1)
         else: cn, jp = full_res, full_res
         
@@ -323,14 +333,14 @@ async def send_active_message(context):
 
 # 定時任務
 async def daily_morning(context):
-    get_latest_news() # 早上刷新一次新聞
+    get_latest_news()
     for cid in user_states: user_states[cid].update({"is_sleeping": False, "active_count": 0})
 async def daily_night(context):
     for cid in user_states: user_states[cid]["is_sleeping"] = True
 
 if __name__ == '__main__':
     load_memory()
-    get_latest_news() # 啟動時先抓一次
+    get_latest_news()
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
@@ -343,6 +353,5 @@ if __name__ == '__main__':
     jq.run_daily(daily_morning, time=time(7, 30, tzinfo=tz))
     jq.run_daily(daily_night, time=time(0, 0, tzinfo=tz))
     
-    print("✅ 佐奈聰音 V19.2 已上線！")
+    print("✅ 佐奈聰音 V19.5 (全能夥伴版) 已上線！")
     app.run_polling()
-
