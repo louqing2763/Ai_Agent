@@ -19,7 +19,6 @@ from duckduckgo_search import DDGS
 # ==========================================
 # 🔧 雲端安全設定 (從環境變數讀取 Key)
 # ==========================================
-# 若在本地執行，請將 os.getenv("...") 換回您的真實 Key 字串
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
@@ -27,6 +26,13 @@ ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_ID = os.getenv("ADMIN_ID")
 
+print("--- 環境變數檢查 ---")
+print(f"Token 讀取狀態: {TELEGRAM_BOT_TOKEN}") # 這樣我們就能在 Log 看到它讀到了什麼
+if TELEGRAM_BOT_TOKEN is None:
+    print("❌ 嚴重錯誤：Token 是 None (空的)！變數名稱可能不對，或沒讀到。")
+else:
+    print(f"✅ Token 已讀取，長度為: {len(TELEGRAM_BOT_TOKEN)}")
+print("-------------------")
 # ==========================================
 # 📘 語氣範本
 # ==========================================
@@ -345,3 +351,4 @@ if __name__ == '__main__':
     
     print("✅ 佐奈聰音 V19.1 已上線！")
     app.run_polling()
+
