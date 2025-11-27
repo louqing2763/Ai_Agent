@@ -93,7 +93,6 @@ def get_base_persona():
 
 ## 4. 語言風格與格式
 * **【強制輸出格式】：** `中文內容|||日文翻譯`
-* **【純對話模式】：** **絕對禁止使用括號 `()` 或 `（）` 描寫任何動作。**
 * **日文風格：** 極度口語化 (タメ口)，語氣要像溫柔的動漫少女。
 * **語氣：** 溫柔中帶有活力，真誠且直率。
 
@@ -264,7 +263,7 @@ async def process_reply(update, context, user_text=None, is_voice_input=False, i
     messages = [{"role": "system", "content": current_prompt}] + chat_history[chat_id]
     if user_text: messages.append({"role": "user", "content": prefix + str(user_text)})
 
-    trigger_words = ["語音", "說", "唸", "講", "聲音", "聽"]
+    trigger_words = ["語音",]
     should_speak = is_voice_input or user_states[chat_id]["voice_mode"] or (user_text and any(w in user_text for w in trigger_words))
 
     if should_speak: await context.bot.send_chat_action(chat_id=chat_id, action='record_voice')
@@ -306,4 +305,72 @@ async def handle_photo(update, context):
     if update.message.photo:
         photo = await update.message.photo[-1].get_file()
         base64_img = base64.b64encode(await photo.download_as_bytearray()).decode('utf-8')
-        await process_reply(update, context,
+        await process_reply(update, context, user_text=None, is_photo_input=True, photo_base64=base64_img)
+
+async def error_handler(update, context):
+    print(f"🚨 Error: {context.error}")
+    if ADMIN_ID: 
+        try: await context.bot.send_message(chat_id=ADMIN_ID, text=f"🚨 錯誤：\n{context.error}")
+        except: pass
+
+async def send_active_message(context):
+    for chat_id, state in user_states.items():
+        if state.get("is_sleeping") or state.get("active_count", 0) >= 2: continue
+        state["time_val"] += 1
+        if random.random() > 0.3: continue
+        state["active_count"] += 1
+        
+        rand_val = random.random()
+        trigger = ""
+        news_info = None
+        
+        if rand_val < 0.2:
+            news_info = get_latest_news()
+            trigger = f"【指令：分享新聞】看到這則新聞：\n{news_info}\n請分享給落卿並發表看法。雙語格式。禁止動作描寫。"
+        elif rand_val < 0.5: trigger = "【指令：依賴】覺得寂寞，問落卿在幹嘛。"
+        else: trigger = "【指令：撒嬌】想聽落卿的聲音。"
+
+        prompt = get_base_persona() + "\n" + get_current_prompt()
+        messages = [{"role": "system", "content": prompt}] + chat_history.get(chat_id, []) + [{"role": "system", "content": trigger}]
+
+        if state.get("voice_mode"): await context.bot.send_chat_action(chat_id=chat_id, action='record_voice')
+        else: await context.bot.send_chat_action(chat_id=chat_id, action='typing')
+
+        if news_info: full_res = get_dual_core_response(messages, "新聞", search_context=news_info) 
+        else: full_res = get_dual_core_response(messages, "日常")
+        
+        if "|||" in full_res: cn, jp = full_res.split("|||", 1)
+        else: cn, jp = full_res, full_res
+        
+        await context.bot.send_message(chat_id=chat_id, text=cn.strip())
+        if state.get("voice_mode"):
+            voice = await generate_elevenlabs_audio(jp.strip())
+            if voice: await context.bot.send_voice(chat_id=chat_id, voice=voice)
+        
+        if chat_id in chat_history: chat_history[chat_id].append({"role": "assistant", "content": full_res})
+        save_memory()
+
+# 定時任務
+async def daily_morning(context):
+    get_latest_news()
+    for cid in user_states: user_states[cid].update({"is_sleeping": False, "active_count": 0})
+async def daily_night(context):
+    for cid in user_states: user_states[cid]["is_sleeping"] = True
+
+if __name__ == '__main__':
+    load_memory()
+    get_latest_news()
+    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_error_handler(error_handler)
+    
+    jq = app.job_queue
+    tz = pytz.timezone('Asia/Taipei')
+    jq.run_repeating(send_active_message, interval=300, first=10)
+    jq.run_daily(daily_morning, time=time(7, 30, tzinfo=tz))
+    jq.run_daily(daily_night, time=time(0, 0, tzinfo=tz))
+    
+    print("✅ 佐奈聰音 V20.2 已上線！")
+    app.run_polling()
