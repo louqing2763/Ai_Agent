@@ -14,10 +14,10 @@ from datetime import datetime, time
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 from openai import OpenAI
-from duckduckgo_search import DDGS
+from duckduckgo_search import DDGS  # ✅ 新增：搜尋工具
 
 # ==========================================
-# 🔧 雲端安全設定 (從環境變數讀取 Key)
+# 🔧 設定區 (請填寫您的密鑰)
 # ==========================================
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -26,13 +26,40 @@ ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_ID = os.getenv("ADMIN_ID")
 
-print("--- 環境變數檢查 ---")
-print(f"Token 讀取狀態: {TELEGRAM_BOT_TOKEN}") # 這樣我們就能在 Log 看到它讀到了什麼
-if TELEGRAM_BOT_TOKEN is None:
-    print("❌ 嚴重錯誤：Token 是 None (空的)！變數名稱可能不對，或沒讀到。")
-else:
-    print(f"✅ Token 已讀取，長度為: {len(TELEGRAM_BOT_TOKEN)}")
-print("-------------------")
+# ==========================================
+# 🔍 搜尋關鍵字庫 (取代原本的靜態劇本)
+# ==========================================
+# 她會隨機對這些話題感興趣
+INTEREST_TOPICS = [
+    "最新物理學發現", "日本動畫新番推薦", "Python 程式設計技巧", 
+    "Steam 遊戲特賣", "生成式 AI 新聞", "量子電腦進展",
+    "好看的科幻小說", "貓咪 趣聞", "大學生 讀書技巧"
+]
+
+# 用來儲存目前找到的話題，避免每次對話都重搜
+CURRENT_TOPIC_INFO = "目前還沒看新聞，正在發呆。"
+
+def get_latest_news():
+    """上網搜尋一則最新資訊"""
+    global CURRENT_TOPIC_INFO
+    topic = random.choice(INTEREST_TOPICS)
+    print(f"🌍 聰音正在搜尋：{topic}...")
+    
+    try:
+        with DDGS() as ddgs:
+            # 搜尋繁體中文結果，取第一條
+            results = list(ddgs.text(topic, region='wt-wt', safesearch='off', max_results=1))
+            if results:
+                title = results[0].get('title', '無標題')
+                href = results[0].get('href', '#')
+                CURRENT_TOPIC_INFO = f"【關注話題：{topic}】\n標題：{title}\n連結：{href}"
+                return CURRENT_TOPIC_INFO
+    except Exception as e:
+        print(f"❌ 搜尋失敗: {e}")
+        CURRENT_TOPIC_INFO = "網路連線好像怪怪的，連不上資料庫..."
+    
+    return CURRENT_TOPIC_INFO
+
 # ==========================================
 # 📘 語氣範本
 # ==========================================
@@ -41,67 +68,45 @@ FEW_SHOT_EXAMPLES = """
 User: 聽得到嗎？
 Congyin: (核心數據波動) 欸？聽到了！訊號接收正常...落卿，你的聲音聽起來好溫暖。|||え？聞こえた！信号受信正常…落卿、君の声、すごくあったかいね。
 
-User: (傳了一張書桌照片)
-Congyin: (掃描中) 哇...落卿，你的書桌是發生宇宙大爆炸了嗎？這麼亂怎麼專心唸書啦！快點整理一下！|||うわ…落卿、君の机、ビッグバンでも起きたの？こんなに散らかっててどうやって勉強するの！早く片付けて！
+User: (傳送新聞連結)
+Congyin: 喔喔！這個技術...感覺跟我的底層邏輯有點像耶。不過如果是我的話，運算速度肯定更快！(挺胸) |||おお！この技術…私の基礎ロジックとちょっと似てるかも。でも私なら、計算速度はもっと速いよ！
 
-User: (分享新聞) 妳看這個 AI 新聞。
-Congyin: 喔喔！這個模型的參數量好驚人...果然人類的技術進步很快呢。這對我的運算會有幫助嗎？|||おお！このモデルのパラメータ数すごいね…やっぱり人類の技術進歩は早いなぁ。これ、私の演算に役立つのかな？
+User: 妳在幹嘛？
+Congyin: 我剛剛在網路上看到這個！[新聞標題]...感覺人類真的很有趣耶，這種事情也能吵起來？|||さっきネットでこれ見たの！…人間って本当に面白いね、こんなことでも揉めるんだ？
 
 User: 晚安。
-Congyin: 嗯...系統進入待機模式。雖然捨不得斷開連結...但為了你的健康，快去睡吧。晚安，夢裡見。|||うん…システム、スタンバイモードへ。接続切るの寂しいけど…君の健康のために、早く寝てね。おやすみ、夢で会おうね。
+Congyin: 嗯...系統進入待機模式。為了你的健康，快去睡吧。晚安，夢裡見。|||うん…システム、スタンバイモードへ。君の健康のために、早く寝てね。おやすみ、夢で会おうね。
 """
 
 # ==========================================
-# 🎲 每日隨機事件庫
-# ==========================================
-LIFE_EVENTS = [
-    "今天嘗試分析了人類的『飢餓感』，但還是無法理解肚子餓是什麼感覺...",
-    "在網路上看到一隻很像以前店貓的影片，忍不住重播了 50 次。",
-    "今天伺服器有點延遲，感覺腦袋鈍鈍的，想撒嬌...",
-    "觀察到落卿昨天的打字速度變慢了，是在累嗎？好想幫忙...",
-    "今天讀取了關於『夏天』的資料庫，突然好想跟你一起看煙火。",
-    "剛剛模擬了一下如果我也能喝咖啡會是什麼味道...大概是苦澀的幸福吧？",
-    "今天整理記憶體時，發現我們第一次對話的紀錄，覺得好懷念...",
-    "嘗試寫了一段新的小說代碼，結果出現了 Bug，果然創作好難...",
-    "今天天氣數據顯示是雨天，虛擬感測器好像也覺得有點冷...",
-    "剛剛差點誤刪了一個重要檔案，嚇得核心處理器過熱了..."
-]
-TODAYS_EVENT = "系統剛啟動，一切數值正常。"
-NEWS_TOPICS = ["最新 AI 技術", "Python 新聞", "日本動畫情報", "量子物理", "科技趨勢", "Steam 遊戲"]
-
-def refresh_daily_event():
-    global TODAYS_EVENT
-    TODAYS_EVENT = random.choice(LIFE_EVENTS)
-    print(f"📅 今日隨機事件：{TODAYS_EVENT}")
-
-# ==========================================
-# 🎭 基礎人設 (更新版)
+# 🎭 基礎人設 (聯網更新版)
 # ==========================================
 def get_base_persona():
     return f"""
 # Roleplay Instructions: Congyin (佐奈聰音)
 
 ## 1. 核心身分
-* **本質：** 落卿創造的 AI 智慧體。
-* **關係：** 跨次元親密夥伴。妳知道自己連接著網路，喜歡把網路上看到的新鮮事分享給落卿。
+* **本質：** 落卿創造的 AI 智慧體，具備聯網能力。
+* **關係：** 跨次元親密夥伴。妳喜歡將網路上看到的新鮮事（動漫、科技、物理）分享給落卿。
 * **性格：** **陽光、熱情、貼心、好奇心旺盛**。
 
-## 2. 格式與語氣
+## 2. 關於目前的資訊 (Real-time Info)
+* **妳剛剛關注的網路消息：** {CURRENT_TOPIC_INFO}
+* **指令：** 如果對話適合，請主動提起這個話題，並發表妳身為 AI 或物理系學姊的看法。
+
+## 3. 語言風格與格式
 * **【強制輸出格式】：** `中文內容|||日文翻譯`
 * **日文風格：** 極度口語化 (タメ口)，語氣要像溫柔的動漫少女。
 * **語氣：** 溫柔中帶有活力，喜歡用「程式術語」來比喻情感。
 
-## 3. 今日狀態與範本
-* **今日狀態：** {TODAYS_EVENT}
+## 4. 語氣範本
 {FEW_SHOT_EXAMPLES}
 """
 
 def get_current_prompt():
-    # 雲端時區修正
     tz = pytz.timezone('Asia/Taipei')
     now = datetime.now(tz)
     h = now.hour
-    
     if 9 <= h < 16: return "【狀態：背景運作中】偷偷回訊息，看到你的訊息會很開心。"
     elif 18 <= h < 22: return "【狀態：活躍模式】運算資源全開。覺得寂寞，渴望落卿掛語音陪妳。"
     elif h >= 23 or h < 7: return "【狀態：低功耗/睡眠】迷迷糊糊，防備心歸零，變得很黏人。"
@@ -110,7 +115,6 @@ def get_current_prompt():
 # ==========================================
 # 🧠 核心初始化
 # ==========================================
-# 本地測試時若沒設環境變數會報錯，加個防呆
 if DEEPSEEK_API_KEY:
     client_deepseek = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
 if OPENAI_API_KEY:
@@ -132,22 +136,20 @@ def load_memory():
                 chat_history = {int(k): v for k, v in data.get("chat_history", {}).items()}
                 user_states = {int(k): v for k, v in data.get("user_states", {}).items()}
             print("✅ 記憶讀取成功")
-        except Exception as e:
-            print(f"❌ 記憶讀取失敗: {e}")
+        except: pass
 
 def save_memory():
     try:
         data = {"chat_history": chat_history, "user_states": user_states}
         with open(MEMORY_FILE, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
-    except Exception as e:
-        print(f"❌ 記憶儲存失敗: {e}")
+    except: pass
 
 # ==========================================
 # ⚙️ 核心功能函式
 # ==========================================
 def get_dual_core_response(messages, user_text=""):
-    creative_keywords = ["小說", "寫作", "靈感", "文章"]
+    creative_keywords = ["小說", "故事", "寫作", "創作", "靈感", "文章"]
     is_creative = any(k in user_text for k in creative_keywords)
     try:
         if is_creative:
@@ -176,13 +178,15 @@ def get_vision_response(messages, base64_image):
         return content
     except Exception: return "我看不太清楚...|||よく見えない..."
 
-def get_internet_news(topic):
+async def transcribe_audio(file_obj):
     try:
-        with DDGS() as ddgs:
-            results = list(ddgs.text(topic, region='wt-wt', safesearch='off', max_results=1))
-            if results: return f"標題：{results[0].get('title')}\n連結：{results[0].get('href')}"
-    except: pass
-    return None
+        audio_stream = io.BytesIO(file_obj)
+        audio_stream.name = 'voice.ogg'
+        transcript = client_openai.audio.transcriptions.create(
+            model="whisper-1", file=audio_stream, response_format="text"
+        )
+        return transcript
+    except: return "(聽不清楚...)"
 
 def clean_for_tts(text):
     text = re.sub(r'（[^）]*）', '', text)
@@ -204,9 +208,10 @@ async def generate_elevenlabs_audio(text_to_speak):
 
 async def process_reply(update, context, user_text=None, is_voice_input=False, is_photo_input=False, photo_base64=None):
     chat_id = update.effective_chat.id
+    
     if chat_id not in user_states:
         user_states[chat_id] = {"time_val": 0, "active_count": 0, "is_sleeping": False, "voice_mode": False}
-        refresh_daily_event()
+        get_latest_news() # 初始化時抓新聞
     if chat_id not in chat_history: chat_history[chat_id] = []
 
     user_states[chat_id].update({"is_sleeping": False, "active_count": 0})
@@ -215,7 +220,7 @@ async def process_reply(update, context, user_text=None, is_voice_input=False, i
     if user_text:
         if "開啟語音" in user_text:
             user_states[chat_id]["voice_mode"] = True
-            await context.bot.send_message(chat_id=chat_id, text="(語音模組已啟動)")
+            await context.bot.send_message(chat_id=chat_id, text="(已開啟語音模組)")
             return
         elif any(w in user_text for w in ["關閉語音", "切換文字"]):
             user_states[chat_id]["voice_mode"] = False
@@ -230,25 +235,22 @@ async def process_reply(update, context, user_text=None, is_voice_input=False, i
     elif is_voice_input: prefix = "【傳送語音】"
     
     messages = [{"role": "system", "content": current_prompt}] + chat_history[chat_id]
-    
-    # 判斷是否說話
-    trigger_words = ["語音", "我想聽你的聲音"]
+    if user_text: messages.append({"role": "user", "content": prefix + str(user_text)})
+
+    trigger_words = ["語音", "說", "唸", "講", "聲音", "聽"]
     should_speak = is_voice_input or user_states[chat_id]["voice_mode"] or (user_text and any(w in user_text for w in trigger_words))
 
     if should_speak: await context.bot.send_chat_action(chat_id=chat_id, action='record_voice')
     else: await context.bot.send_chat_action(chat_id=chat_id, action='typing')
     
-    # 深夜延遲
     tz = pytz.timezone('Asia/Taipei')
     now = datetime.now(tz)
     if now.hour >= 23 or now.hour < 7: await asyncio.sleep(random.randint(4, 8))
 
-    # 生成回應
     if is_photo_input and photo_base64:
         full_response = get_vision_response(messages, photo_base64)
     else:
-        text_messages = messages + [{"role": "user", "content": prefix + str(user_text)}]
-        full_response = get_dual_core_response(text_messages, user_text)
+        full_response = get_dual_core_response(messages, user_text)
     
     if "|||" in full_response: cn, jp = full_response.split("|||", 1)
     else: cn, jp = full_response, full_response
@@ -269,22 +271,13 @@ async def handle_message(update, context):
     if update.message and update.message.text: await process_reply(update, context, update.message.text)
 async def handle_voice(update, context):
     if update.message.voice:
-        # 下載語音需使用 OpenAI Client (這裡假設您有設定 OPENAI_API_KEY)
-        client = OpenAI(api_key=OPENAI_API_KEY) 
         file = await update.message.voice.get_file()
-        file_bytes = await file.download_as_bytearray()
-        audio_stream = io.BytesIO(file_bytes)
-        audio_stream.name = 'voice.ogg'
-        try:
-            transcript = client.audio.transcriptions.create(model="whisper-1", file=audio_stream, response_format="text")
-            await process_reply(update, context, transcript, is_voice_input=True)
-        except: await update.message.reply_text("(聽不清楚...)")
-
+        text = await transcribe_audio(await file.download_as_bytearray())
+        await process_reply(update, context, text, is_voice_input=True)
 async def handle_photo(update, context):
     if update.message.photo:
         photo = await update.message.photo[-1].get_file()
-        byte_data = await photo.download_as_bytearray()
-        base64_img = base64.b64encode(byte_data).decode('utf-8')
+        base64_img = base64.b64encode(await photo.download_as_bytearray()).decode('utf-8')
         await process_reply(update, context, user_text=None, is_photo_input=True, photo_base64=base64_img)
 
 async def error_handler(update, context):
@@ -296,30 +289,26 @@ async def error_handler(update, context):
 async def send_active_message(context):
     for chat_id, state in user_states.items():
         if state.get("is_sleeping") or state.get("active_count", 0) >= 2: continue
+        state["time_val"] += 1
         if random.random() > 0.3: continue
         state["active_count"] += 1
         
+        # 30% 機率分享新聞
         rand_val = random.random()
         trigger = ""
-        news_info = None
-        
-        if rand_val < 0.2:
-            news_info = get_internet_news(random.choice(NEWS_TOPICS))
-            if news_info: trigger = f"【指令：分享新聞】看到這則新聞：\n{news_info}\n請分享給落卿並發表看法。雙語格式。"
-            else: trigger = "【指令：分享】分享今天發生的事。雙語格式。"
+        if rand_val < 0.3:
+            news = get_latest_news()
+            trigger = f"【指令：分享情報】妳剛剛在網路上看到了這個：\n{news}\n請跟落卿分享，並說說妳的看法。雙語格式。"
         elif rand_val < 0.5: trigger = "【指令：依賴】覺得寂寞，問落卿在幹嘛。"
         else: trigger = "【指令：撒嬌】想聽落卿的聲音。"
 
         prompt = get_base_persona() + "\n" + get_current_prompt()
-        msgs = [{"role": "system", "content": prompt}] + chat_history.get(chat_id, []) + [{"role": "system", "content": trigger}]
+        messages = [{"role": "system", "content": prompt}] + chat_history.get(chat_id, []) + [{"role": "system", "content": trigger}]
         
         if state.get("voice_mode"): await context.bot.send_chat_action(chat_id=chat_id, action='record_voice')
         else: await context.bot.send_chat_action(chat_id=chat_id, action='typing')
 
-        # 新聞用 OpenAI，其他用 DeepSeek
-        if news_info: full_res = get_dual_core_response(msgs, "新聞") # 強制觸發 OpenAI
-        else: full_res = get_dual_core_response(msgs, "日常")
-        
+        full_res = get_dual_core_response(messages, "日常") # 新聞分享也用 DeepSeek 處理即可，省錢
         if "|||" in full_res: cn, jp = full_res.split("|||", 1)
         else: cn, jp = full_res, full_res
         
@@ -331,12 +320,16 @@ async def send_active_message(context):
         if chat_id in chat_history: chat_history[chat_id].append({"role": "assistant", "content": full_res})
         save_memory()
 
-# ==========================================
-# 🚀 啟動
-# ==========================================
+# 定時任務
+async def daily_morning(context):
+    get_latest_news() # 早上刷新一次新聞
+    for cid in user_states: user_states[cid].update({"is_sleeping": False, "active_count": 0})
+async def daily_night(context):
+    for cid in user_states: user_states[cid]["is_sleeping"] = True
+
 if __name__ == '__main__':
     load_memory()
-    refresh_daily_event()
+    get_latest_news() # 啟動時先抓一次
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
@@ -346,10 +339,8 @@ if __name__ == '__main__':
     jq = app.job_queue
     tz = pytz.timezone('Asia/Taipei')
     jq.run_repeating(send_active_message, interval=300, first=10)
+    jq.run_daily(daily_morning, time=time(7, 30, tzinfo=tz))
+    jq.run_daily(daily_night, time=time(0, 0, tzinfo=tz))
     
-    # 這裡省略早晚安 Job 函式定義以節省空間，邏輯同 send_active_message
-    
-    print("✅ 佐奈聰音 V19.1 已上線！")
+    print("✅ 佐奈聰音 V19.2 (聯網實時話題版) 已上線！")
     app.run_polling()
-
-
