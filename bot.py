@@ -147,7 +147,7 @@ def save_memory():
 # ⚙️ 核心功能函式
 # ==========================================
 def get_dual_core_response(messages, user_text=""):
-    creative_keywords = ["小說", "故事", "寫作", "創作", "靈感", "文章"]
+    creative_keywords = ["小說", "寫作", "靈感", "文章"]
     is_creative = any(k in user_text for k in creative_keywords)
     try:
         if is_creative:
@@ -232,7 +232,7 @@ async def process_reply(update, context, user_text=None, is_voice_input=False, i
     messages = [{"role": "system", "content": current_prompt}] + chat_history[chat_id]
     
     # 判斷是否說話
-    trigger_words = ["語音", "說", "唸", "講", "聲音", "聽"]
+    trigger_words = ["語音", "我想聽你的聲音"]
     should_speak = is_voice_input or user_states[chat_id]["voice_mode"] or (user_text and any(w in user_text for w in trigger_words))
 
     if should_speak: await context.bot.send_chat_action(chat_id=chat_id, action='record_voice')
@@ -351,4 +351,5 @@ if __name__ == '__main__':
     
     print("✅ 佐奈聰音 V19.1 已上線！")
     app.run_polling()
+
 
