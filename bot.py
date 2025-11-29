@@ -53,14 +53,14 @@ def init_redis():
     try:
         r = redis.Redis(
             host=REDIS_HOST,
-            port=REDIS_PORT,
-            password=REDIS_PASSWORD,
+            port=int(REDIS_PORT),
+            password=REDIS_PASSWORD if REDIS_PASSWORD else None,
             decode_responses=True,
-            socket_timeout=3,
-            socket_connect_timeout=3,
+            socket_timeout=5,
+            socket_connect_timeout=5,
         )
         r.ping()
-        print("✅ Redis 連線成功！")
+        print("✅ Redis 連線成功")
         return r
     except Exception as e:
         print("❌ Redis 連線失敗，啟動 fallback RAM:", e)
@@ -677,3 +677,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
