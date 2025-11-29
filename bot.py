@@ -640,32 +640,23 @@ async def handle_voice(update: Update, context):
 # ----------------------------------------------------------
 
 def main():
-    # 建立 Telegram app
+
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
     # Handlers
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
 
-    # JobQueue
-    jq = app.job_queue
+    # Job queue
+    app.job_queue.run_repeating(active_push, interval=300, first=15)
+
     tz = pytz.timezone("Asia/Taipei")
+    app.job_queue.run_daily(daily_wakeup, time=time(7, 30, tzinfo=tz))
+    app.job_queue.run_daily(daily_sleep, time=time(0, 0, tzinfo=tz))
 
-    # 每 5 分鐘推播一次
-    jq.run_repeating(active_push, interval=300, first=20)
-
-    # 每日早上 7:30 起床
-    jq.run_daily(daily_wakeup, time=time(7, 30, tzinfo=tz))
-
-    # 每日凌晨 00:00 睡覺
-    jq.run_daily(daily_sleep, time=time(0, 0, tzinfo=tz))
-
-    # 啟動後的開機問候
-    async def startup(app_context):
-        await send_boot_message(app)
-
-    app.post_init(startup)
+    # 開機問候（1 秒後）
+    app.job_queue.run_once(lambda ctx: asyncio.create_task(send_boot_message(app)), 1)
 
     print("🚀 Congyin V5 started.")
     app.run_polling()
@@ -677,4 +668,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
