@@ -533,21 +533,19 @@ async def daily_sleep(context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     load_memory()
+    
+    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
-    app = (
-        ApplicationBuilder()
-        .token(TELEGRAM_BOT_TOKEN)
-        .job_queue()
-        .build()
-    )
-
+    # Handlers
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
 
+    # JobQueue 會自動存在
     jq = app.job_queue
 
     tz = pytz.timezone("Asia/Taipei")
+
     jq.run_repeating(active_push, interval=300, first=10)
     jq.run_daily(daily_wakeup, time=time(7, 30, tzinfo=tz))
     jq.run_daily(daily_sleep, time=time(0, 0, tzinfo=tz))
@@ -555,7 +553,7 @@ def main():
     print("✅ Congyin V3 started.")
     app.run_polling()
 
-
 if __name__ == "__main__":
     main()
+
 
