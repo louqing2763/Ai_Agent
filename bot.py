@@ -180,9 +180,13 @@ def get_time_state():
 
 
 def fix_output(text: str):
-    """強制格式：中文|||日文，並去掉日文中的中文"""
+    """
+    模型仍然輸出 中文||日文（為了語音），
+    但我們只讓中文顯示，日文只用於播放語音，不顯示給使用者。
+    """
     if "|||" not in text:
-        return f"{text}|||{text}"
+        cn = text.strip()
+        return f"{cn}|||{cn}"
 
     cn, jp = text.split("|||", 1)
     jp = re.sub(r"[\u4e00-\u9fff]", "", jp)
@@ -516,3 +520,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
