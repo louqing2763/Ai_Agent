@@ -619,22 +619,28 @@ def main():
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
+    # Handlers
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
 
+    # Active push every 300 sec
     app.job_queue.run_repeating(active_push, interval=300, first=20)
 
+    # Daily sleep/wakeup（如果你需要）
     tz = pytz.timezone("Asia/Taipei")
-    app.job_queue.run_daily(daily=lambda ctx: None, time=time(0, 0, tzinfo=tz))
-    app.job_queue.run_daily(daily=lambda ctx: None, time=time(7, 30, tzinfo=tz))
+
+    # 你沒有定義 daily_wakeup / daily_sleep，所以先做空白函數
+    async def noop(context):
+        return
+
+    app.job_queue.run_daily(noop, time=time(0, 0, tzinfo=tz))
+    app.job_queue.run_daily(noop, time=time(7, 30, tzinfo=tz))
 
     # Boot message
     app.job_queue.run_once(lambda ctx: asyncio.create_task(send_boot_message(app)), 5)
 
-    print("🚀 Congyin V6.1 started.")
+    print("🚀 Congyin V6.2 started.")
     app.run_polling()
 
 
-if __name__ == "__main__":
-    main()
