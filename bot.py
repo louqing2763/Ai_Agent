@@ -30,6 +30,8 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID")
+REDIS_URL = os.getenv("REDIS_URL")
+
 
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
@@ -642,5 +644,6 @@ def main():
 
     print("🚀 Congyin V6.2 started.")
     app.run_polling()
+
 
 
