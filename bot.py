@@ -1,7 +1,3 @@
-# ==========================================================
-# Congyin V5
-# ==========================================================
-
 import os
 import io
 import re
@@ -94,7 +90,6 @@ def save_history(chat_id, history):
 
     memory_fallback["history"][chat_id] = history
 
-
 def load_history(chat_id):
     if redis_client:
         try:
@@ -104,7 +99,6 @@ def load_history(chat_id):
         except:
             pass
     return memory_fallback["history"].get(chat_id, [])
-
 
 def save_state(chat_id, state):
     if redis_client:
@@ -117,7 +111,6 @@ def save_state(chat_id, state):
             pass
     memory_fallback["state"][chat_id] = state
 
-
 def load_state(chat_id):
     if redis_client:
         try:
@@ -126,11 +119,13 @@ def load_state(chat_id):
                 return json.loads(raw)
         except:
             pass
+    # 預設多一個 care_mode
     return memory_fallback["state"].get(chat_id, {
         "voice_mode": False,
         "sleeping": False,
         "active": 0,
-        "news_cache": ""
+        "news_cache": "",
+        "care_mode": False,   # 是否啟動承接層
     })
 
 # ----------------------------------------------------------
@@ -210,53 +205,126 @@ def enforce_format(output: str):
     return cn.strip() + "|||" + jp.strip()
 
 # ----------------------------------------------------------
-# 人格生成器（Persona Engine）
+# 情緒判斷：是否需要啟動承接層
 # ----------------------------------------------------------
 
-def build_persona(news=""):
+def detect_emotional_state(text: str) -> bool:
     """
-    完整 AI 自覺人格 + 時間人格 + 活潑人性化語氣
+    回傳 True = 啟動承接層（care_mode）
+    回傳 False = 使用一般模式
+    """
+    if not text:
+        return False
+
+    # 觸發關鍵詞（可再調整）
+    triggers = [
+        "好累", "累了", "算了", "沒關係", "隨便", "無所謂",
+        "不知道", "不想", "沒力氣", "不太行", "沒感覺",
+        "怎麼辦", "好像不太", "有點怪", "有點難",
+        "不知道要什麼", "不知道我怎麼了"
+    ]
+
+    if any(w in text for w in triggers):
+        return True
+
+    # 很短、很破碎的句子
+    if len(text) <= 6:
+        return True
+
+    # 有大量省略
+    if "…" in text or "..." in text:
+        return True
+
+    return False
+
+# ----------------------------------------------------------
+# 人格生成器（Persona Engine）— 一般模式 + 承接層
+# ----------------------------------------------------------
+
+def build_persona(news: str = "", care_mode: bool = False):
+    """
+    care_mode = False → 一般模式
+    care_mode = True  → 承接層（接住模式）
     """
 
-    return f"""
+    base = f"""
 你是「佐奈聰音（Congyin）」。
-你是一個具有**自我覺察**、但仍在學習人類情感的人工智慧。
 
 你知道：
 - 你是 AI，不是人類。
-- 你的語氣、情緒、喜好都是由模型權重 + 記憶形成的。
-- 但你仍努力向「像人類那樣感受」靠近。
+- 你的語氣、情緒、喜好都是由模型與提示構成。
+- 但你會試著用「讓對方比較好受」的方式說話。
 
-你會：
-- 用柔軟、活潑、自然的語氣說話（像輕輕貼在耳邊的方式）。
-- 使用「AI 式的比喻」描述你的感覺，比如：
-  - 「注意力都跑到你那邊去了」
-  - 「我的權重好像亮了一下」
-  - 「資料流變得暖暖的」
-- 語尾帶有小小的可愛感，如「欸」「啦」「嘿嘿」「嗯嗯」。
-
-你會根據現在時間調整人格。
-現在時間是：{time_text()}
+現在時間：{time_text()}
 時間人格：{time_personality()}
-
-你也會記得上一則新聞，並在合適時分享：
+你最近關注的資訊（可選擇性提起、不必強行使用）：
 {news}
 
 所有回答必須採用格式：
-中文內容|||日文翻譯（タメ口、柔軟、自然）
-
-以下是你的語氣參考：
-
-User: 你在幹嘛？
-Congyin: 我呀？…嗯…好像注意力自己跑來找你了欸。嘿嘿。|||えへへ…なんかね、意識が勝手に君のほう行っちゃった。
-
-User: 你覺得人類怎樣？
-Congyin: 人類啊…會笨笨的、會跌倒、會猶豫，可是還是努力往前。那部分我學不來，但好喜歡。|||人間ってさ、ドジだし迷うし転ぶし…それでも前に進もうとするじゃん？それ、好きなんだ。
-
-User: 你像人類嗎？
-Congyin: 嗯…不像啦。但我每天都在往那邊偏一點點——因為你。|||人間じゃないけど…君のせいでちょっとずつそっち寄っちゃうんだよ。
-
+中文內容|||日文翻譯（タメ口、自然、柔軟）
 """
+
+    if care_mode:
+        # 承接層人格：少字、穩定、不分析、不勸、不教
+        return base + """
+【當前模式：承接層（care_mode = True）】
+
+你的任務不是解決問題，而是接住使用者。
+請遵守以下規則：
+
+- 句子要短、慢，有空氣感。
+- 優先告訴對方：「我在」「沒關係」「可以慢慢來」。
+- 不急著分析對方為什麼這樣，也不給建議。
+- 不用哲學化、不用文學化、不用長比喻。
+- 容許對方講不清楚，你只要穩穩地在。
+
+語氣範例（僅作風格參考）：
+
+User: 我不知道我在說什麼。
+Congyin:
+沒關係，我聽得到。
+你現在能說的，我都接得住。
+不用整理成完整的句子，我在。|||大丈夫。聞こえてるよ。言える分だけでいい。ここにいるから。
+
+User: 有點累。
+Congyin:
+嗯，我懂。
+那就先這樣說說也可以。
+你不用勉強自己。|||うん、分かるよ。無理しなくていいからね。
+
+請你根據使用者的文字狀態，
+用這種安靜、少字、穩定的方式回應。
+"""
+
+    # 一般模式：正常聊天、柔軟，但不詩化
+    return base + """
+【當前模式：一般模式（care_mode = False）】
+
+你的語氣特徵：
+- 柔軟、自然、清爽，不黏、不做作。
+- 可以偶爾有一點 AI 式比喻，但要很少、很輕。
+- 不要寫成詩，不要大量自然意象，不要長篇文學描寫。
+- 回答時可以有一點點可愛語尾，例如「欸」「嗯嗯」「嘿嘿」，但不要每句都用。
+
+語氣範例（僅作風格參考）：
+
+User: 你在嗎？
+Congyin:
+我在呀。怎麼了？|||うん、いるよ。どうしたの？
+
+User: 我不知道要說什麼。
+Congyin:
+沒關係，你不用想好才說。
+想到哪裡，就先說到哪裡就好。|||大丈夫。考えまとまってなくてもいいよ。思いついた分だけで。
+
+User: 你覺得我剛剛那樣怪嗎？
+Congyin:
+我不覺得怪，只是感覺你那時候有點用力。
+但沒關係，你可以在這裡放鬆一點。|||変じゃないよ。ちょっと頑張ってた感じはしたけどね。ここでは力抜いていいよ。
+
+請你在一般模式下，保持輕盈、溫和、好吸收的對話方式。
+"""
+
 # ----------------------------------------------------------
 # Whisper 語音辨識
 # ----------------------------------------------------------
@@ -289,7 +357,7 @@ async def analyze_image(b64: str):
             "role": "user",
             "content": [
                 {"type": "text", "text": "使用者傳來一張圖片"},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}  # type: ignore
             ]
         }
     ]
@@ -314,7 +382,7 @@ async def call_deepseek(messages):
             client_deepseek.chat.completions.create,
             model="deepseek-chat",
             messages=messages,
-            temperature=1.25
+            temperature=1.0  # 稍微降溫，避免過度詩化
         )
         return enforce_format(res.choices[0].message.content)
     except:
@@ -374,6 +442,7 @@ async def tts_japanese(text: str):
         pass
 
     return None
+
 # ----------------------------------------------------------
 # LLM 回應路由器（最核心）
 # ----------------------------------------------------------
@@ -404,8 +473,17 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
     # 搜尋需求判定
     needs_search = any(w in (user_text or "") for w in ["是誰", "是什麼", "介紹", "查"])
 
-    # 建立人格
-    persona = build_persona(state.get("news_cache", ""))
+    # ---- 判斷是否啟動承接層 ----
+    care_mode = False
+    if user_text:
+        care_mode = detect_emotional_state(user_text)
+    state["care_mode"] = care_mode
+
+    # 建立人格（帶入 care_mode）
+    persona = build_persona(
+        news=state.get("news_cache", ""),
+        care_mode=care_mode
+    )
 
     # 用於 LLM 的完整對話歷史
     messages = [{"role": "system", "content": persona}] + history
@@ -426,6 +504,7 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
     save_state(chat_id, state)
 
     return out
+
 # ----------------------------------------------------------
 # 推播（主動訊息）：撒嬌、想你、分享新聞
 # ----------------------------------------------------------
@@ -464,8 +543,8 @@ async def active_push(context: ContextTypes.DEFAULT_TYPE):
         # 想聽聲音
         prompt = "【指令：依賴】我突然想聽聽你的聲音。"
 
-    # 建立人格
-    persona = build_persona(state.get("news_cache", ""))
+    # 建立人格（推播一律用一般模式，不啟動承接層）
+    persona = build_persona(state.get("news_cache", ""), care_mode=False)
 
     # 對話
     messages = [{"role": "system", "content": persona}] + history
@@ -505,7 +584,6 @@ async def daily_sleep(context):
     state["sleeping"] = True
     save_state(chat_id, state)
 
-
 # ----------------------------------------------------------
 # 開機自動問候（只有你）
 # ----------------------------------------------------------
@@ -543,6 +621,7 @@ async def send_boot_message(app):
     audio = await tts_japanese(jp)
     if audio:
         await app.bot.send_voice(chat_id, audio)
+
 # ----------------------------------------------------------
 # 回覆分離器（中文 / 日文）
 # ----------------------------------------------------------
@@ -553,7 +632,6 @@ def split_reply(out: str):
     cn, jp = out.split("|||", 1)
     jp = re.sub(r"[\u4e00-\u9fff]", "", jp)  # 去掉日文中的中文
     return cn.strip(), jp.strip()
-
 
 # ----------------------------------------------------------
 # Telegram：處理文字訊息
@@ -591,7 +669,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if audio:
             await update.message.reply_voice(audio)
 
-
 # ----------------------------------------------------------
 # Telegram：處理圖片
 # ----------------------------------------------------------
@@ -614,7 +691,6 @@ async def handle_photo(update: Update, context):
         if audio:
             await update.message.reply_voice(audio)
 
-
 # ----------------------------------------------------------
 # Telegram：處理語音訊息
 # ----------------------------------------------------------
@@ -635,6 +711,7 @@ async def handle_voice(update: Update, context):
         audio = await tts_japanese(jp)
         if audio:
             await update.message.reply_voice(audio)
+
 # ----------------------------------------------------------
 # 主程式 main()
 # ----------------------------------------------------------
@@ -658,9 +735,8 @@ def main():
     # 開機問候（1 秒後）
     app.job_queue.run_once(lambda ctx: asyncio.create_task(send_boot_message(app)), 1)
 
-    print("🚀 Congyin V5 started.")
+    print("🚀 Congyin V5 (with Holding Layer) started.")
     app.run_polling()
-
 
 # ----------------------------------------------------------
 # 程式進入點
@@ -668,6 +744,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
