@@ -239,7 +239,7 @@ def get_base_persona(current_topic_info=""):
 
 """
 {FEW_SHOT_EXAMPLES}
-"""
+
 
 
 # ----------------------------------------------------------
@@ -595,3 +595,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
