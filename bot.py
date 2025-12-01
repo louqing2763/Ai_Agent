@@ -19,7 +19,7 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 from duckduckgo_search import DDGS
 from openai import OpenAI
-
+import urllib.parse
 
 # ----------------------------------------------------------
 # Environment Variables
@@ -30,7 +30,14 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID")
+
+
 REDIS_URL = os.getenv("REDIS_URL")
+
+parsed = urllib.parse.urlparse(REDIS_URL or "")
+REDISHOST = parsed.hostname
+REDISPORT = parsed.port
+REDISPASSWORD = parsed.password
 
 
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
@@ -644,6 +651,7 @@ def main():
 
     print("🚀 Congyin V6.2 started.")
     app.run_polling()
+
 
 
 
