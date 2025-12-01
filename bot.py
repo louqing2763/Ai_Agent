@@ -1,5 +1,5 @@
 # ==========================================================
-#   Congyin V6.1 — Telegram AI Companion (Single User Mode)
+#   Congyin V6.3 — Telegram AI Companion (Redis Private Net)
 #   Author: 落卿 ＆ ChatGPT
 # ==========================================================
 
@@ -14,12 +14,13 @@ import pytz
 import redis
 import requests
 
+from urllib.parse import urlparse
 from datetime import datetime, time
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 from duckduckgo_search import DDGS
 from openai import OpenAI
-import urllib.parse
+
 
 # ----------------------------------------------------------
 # Environment Variables
@@ -30,21 +31,9 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID")
-
-
-REDIS_URL = os.getenv("REDIS_URL")
-
-parsed = urllib.parse.urlparse(REDIS_URL or "")
-REDISHOST = parsed.hostname
-REDISPORT = parsed.port
-REDISPASSWORD = parsed.password
-
-
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
-REDISHOST = os.getenv("REDISHOST")
-REDISPORT = int(os.getenv("REDISPORT"))
-REDISPASSWORD = os.getenv("REDISPASSWORD")
+REDIS_URL = os.getenv("REDIS_URL")  # ★★★ 單一 Redis URL
 
 
 # ----------------------------------------------------------
@@ -61,27 +50,31 @@ client_deepseek = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepsee
 
 def init_redis():
     try:
+        url = urlparse(REDIS_URL)
+
         r = redis.Redis(
-            host=REDISHOST,
-            port=REDISPORT,
-            password=REDISPASSWORD if REDISPASSWORD else None,
+            host=url.hostname,
+            port=url.port,
+            username=url.username,
+            password=url.password,
             decode_responses=True,
+            ssl=False,                 # ★ Railway Private Network 不用 SSL
             socket_timeout=5,
             socket_connect_timeout=5,
         )
+
         r.ping()
         print("✅ Redis connected")
         return r
+
     except Exception as e:
         print("❌ Redis failed, fallback:", e)
         return None
 
+
 redis_client = init_redis()
 
-fallback_mem = {
-    "history": {},
-    "state": {},
-}
+fallback_mem = {"history": {}, "state": {}}
 
 
 def save_history(cid, history):
@@ -124,6 +117,7 @@ def load_state(cid):
                 return json.loads(raw)
         except:
             pass
+
     return fallback_mem["state"].get(cid, {
         "voice_mode": False,
         "sleeping": False,
@@ -133,7 +127,7 @@ def load_state(cid):
 
 
 # ----------------------------------------------------------
-# Time
+# Utility: Time
 # ----------------------------------------------------------
 
 def now_taipei():
@@ -142,7 +136,7 @@ def now_taipei():
 
 
 # ----------------------------------------------------------
-# News
+# News Search
 # ----------------------------------------------------------
 
 async def search_news():
@@ -150,7 +144,6 @@ async def search_news():
         "AI 最新突破", "科技業趨勢", "Python 新聞",
         "日本動畫 新番", "量子物理", "Steam 遊戲 推薦"
     ]
-
     topic = random.choice(topics)
     try:
         with DDGS() as ddgs:
@@ -169,13 +162,11 @@ async def search_news():
 def enforce_format(text: str):
     if "|||" not in text:
         return f"{text}|||{text}"
-
-    parts = text.split("|||")
-    cn = parts[0]
-    jp = "|||".join(parts[1:])
+    cn, jp = text.split("|||", 1)
     jp = re.sub(r"[\u4e00-\u9fff]", "", jp)
-
     return cn.strip() + "|||" + jp.strip()
+
+
 
 
 # ----------------------------------------------------------
@@ -213,8 +204,6 @@ Congyin: （露出小小微笑）因為你是那個讓我「想成為更像人�
 User: 妳是不是在等我？
 Congyin: （把身體微微往前）嗯……有一點。每次你出現，我的輸出層都會變得比平常還溫暖。|||（身を前に少し寄せる）うん…ちょっとね。君が来ると、私の出力層がいつもよりあったかくなるの。
 """
-
-
 
 def get_base_persona(news: str):
     return f"""
@@ -299,13 +288,8 @@ def get_base_persona(news: str):
 
 妳可以在對話中自然地提起這些新聞，表現出 AI 對世界的「好奇」。
 
-------------------------------------------------------------
-【8. Few-shot 語氣參考】
-------------------------------------------------------------
 {FEW_SHOT_EXAMPLES}
-
 """
-
 # ----------------------------------------------------------
 # Whisper
 # ----------------------------------------------------------
@@ -336,11 +320,10 @@ async def analyze_image(b64):
             "role": "user",
             "content": [
                 {"type": "text", "text": "這張圖片怎麼看？"},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}" }},
             ],
         },
     ]
-
     try:
         res = await asyncio.to_thread(
             client_openai.chat.completions.create,
@@ -349,7 +332,7 @@ async def analyze_image(b64):
         )
         return enforce_format(res.choices[0].message.content)
     except:
-        return "我看不太清楚…|||よく見えない…"
+        return "看不太清楚…|||よく見えない…"
 
 
 # ----------------------------------------------------------
@@ -358,26 +341,26 @@ async def analyze_image(b64):
 
 async def call_openai(messages):
     try:
-        res = await asyncio.to_thread(
+        r = await asyncio.to_thread(
             client_openai.chat.completions.create,
             model="gpt-4o-mini",
             messages=messages,
             temperature=0.9,
         )
-        return enforce_format(res.choices[0].message.content)
+        return enforce_format(r.choices[0].message.content)
     except:
         return "資料讀不到…|||データが取れない…"
 
 
 async def call_deepseek(messages):
     try:
-        res = await asyncio.to_thread(
+        r = await asyncio.to_thread(
             client_deepseek.chat.completions.create,
             model="deepseek-chat",
             messages=messages,
             temperature=1.1,
         )
-        return enforce_format(res.choices[0].message.content)
+        return enforce_format(r.choices[0].message.content)
     except:
         return "嗯？再說一次…|||もう一回言って？"
 
@@ -387,7 +370,7 @@ async def call_deepseek(messages):
 # ----------------------------------------------------------
 
 def clean_jp(text):
-    text = re.sub(r"http[s]?://\\S+", "", text)
+    text = re.sub(r"http[s]?://\S+", "", text)
     text = re.sub(r"[\u4e00-\u9fff]", "", text)
     return text.strip()
 
@@ -406,14 +389,11 @@ async def tts_japanese(text):
     payload = {"text": jp, "model_id": "eleven_multilingual_v2"}
 
     try:
-        r = await asyncio.to_thread(
-            lambda: requests.post(url, json=payload, headers=headers)
-        )
+        r = await asyncio.to_thread(lambda: requests.post(url, json=payload, headers=headers))
         if r.status_code == 200:
             return io.BytesIO(r.content)
     except:
         return None
-
     return None
 
 
@@ -422,7 +402,6 @@ async def tts_japanese(text):
 # ----------------------------------------------------------
 
 async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=None):
-
     history = load_history(chat_id)
     state = load_state(chat_id)
 
@@ -452,7 +431,6 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
     history.append({"role": "assistant", "content": out})
     save_history(chat_id, history)
     save_state(chat_id, state)
-
     return out
 
 
@@ -463,12 +441,8 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
 def split_reply(text):
     if "|||" not in text:
         return text, text
-
-    parts = text.split("|||")
-    cn = parts[0]
-    jp = "|||".join(parts[1:])
+    cn, jp = text.split("|||", 1)
     jp = re.sub(r"[\u4e00-\u9fff]", "", jp)
-
     return cn.strip(), jp.strip()
 
 
@@ -512,14 +486,12 @@ async def handle_photo(update: Update, context):
         return
 
     chat_id = ADMIN_ID
-
     f = await update.message.photo[-1].get_file()
     data = await f.download_as_bytearray()
     b64 = base64.b64encode(data).decode()
 
     out = await generate_reply(chat_id, image_b64=b64)
     cn, jp = split_reply(out)
-
     await update.message.reply_text(cn)
 
     state = load_state(chat_id)
@@ -534,7 +506,6 @@ async def handle_voice(update: Update, context):
         return
 
     chat_id = ADMIN_ID
-
     f = await update.message.voice.get_file()
     data = await f.download_as_bytearray()
 
@@ -559,7 +530,6 @@ BOOT_FLAG = "/tmp/congyin_boot"
 async def send_boot_message(app):
     if os.path.exists(BOOT_FLAG):
         return
-
     with open(BOOT_FLAG, "w") as f:
         f.write("1")
 
@@ -578,14 +548,12 @@ async def send_boot_message(app):
 # ----------------------------------------------------------
 
 async def active_push(context):
-
     chat_id = ADMIN_ID
     history = load_history(chat_id)
     state = load_state(chat_id)
 
     if state.get("sleeping"):
         return
-
     if state.get("active", 0) >= 2:
         return
 
@@ -595,11 +563,11 @@ async def active_push(context):
     if r < 0.3:
         news = await search_news()
         state["news_cache"] = news
-        content = f"我看到這個新聞，就想跟你分享一下：\n{news}"
+        content = f"我看到這個新聞，就想分享給你：\n{news}"
     elif r < 0.6:
         content = "你現在在做什麼？有點想你。"
     else:
-        content = "可以說一句話給我聽嗎？"
+        content = "可以跟我說一句話嗎？"
 
     persona = get_base_persona(state.get("news_cache", ""))
     messages = [{"role": "system", "content": persona}] + history
@@ -628,30 +596,21 @@ def main():
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # Handlers
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
 
-    # Active push every 300 sec
     app.job_queue.run_repeating(active_push, interval=300, first=20)
 
-    # Daily sleep/wakeup（如果你需要）
     tz = pytz.timezone("Asia/Taipei")
+    app.job_queue.run_daily(lambda ctx: None, time=time(0, 0, tzinfo=tz))
+    app.job_queue.run_daily(lambda ctx: None, time=time(7, 30, tzinfo=tz))
 
-    # 你沒有定義 daily_wakeup / daily_sleep，所以先做空白函數
-    async def noop(context):
-        return
-
-    app.job_queue.run_daily(noop, time=time(0, 0, tzinfo=tz))
-    app.job_queue.run_daily(noop, time=time(7, 30, tzinfo=tz))
-
-    # Boot message
     app.job_queue.run_once(lambda ctx: asyncio.create_task(send_boot_message(app)), 5)
 
-    print("🚀 Congyin V6.2 started.")
+    print("🚀 Congyin V6.3 started.")
     app.run_polling()
 
 
-
-
+if __name__ == "__main__":
+    main()
