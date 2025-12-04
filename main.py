@@ -28,6 +28,7 @@ from core.tts import tts_jp
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY")
 DEEPSEEK_API_KEY    = os.getenv("DEEPSEEK_API_KEY")
+print("DEEPSEEK_API_KEY =", DEEPSEEK_API_KEY)
 ELEVEN_API_KEY      = os.getenv("ELEVENLABS_API_KEY")
 ELEVEN_VOICE_ID     = os.getenv("ELEVENLABS_VOICE_ID")
 
@@ -274,4 +275,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
