@@ -115,6 +115,3 @@ def get_base_persona(news=""):
 
 {FEW_SHOT_EXAMPLES}
 """
-
-"""
-
