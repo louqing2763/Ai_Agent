@@ -43,10 +43,10 @@ REDISPASSWORD  = os.getenv("REDISPASSWORD")
 # --------------------------------------------------------------
 
 redis_client = init_redis(
-    url=REDIS_URL,
-    host=REDISHOST,
-    port=REDISPORT,
-    password=REDISPASSWORD
+    REDIS_URL,
+    REDISHOST,
+    REDISPORT,
+    REDISPASSWORD
 )
 
 print("Redis client =", redis_client)
@@ -274,3 +274,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
