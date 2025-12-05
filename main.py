@@ -22,6 +22,7 @@ from core.news import search_news
 from core.utils import now_taipei
 from core.vision import analyze_image
 from core.tts import tts_jp
+from core.aer import generate_AER
 
 # ------------------------ ENV --------------------------------
 
@@ -99,7 +100,11 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
     needs_search = any(k in (user_text or "") for k in ["是什麼", "介紹", "查", "是誰"])
 
     # ------------------- 組裝人物設定 -------------------
-    persona = get_base_persona(state.get("news_cache", ""))
+    persona = get_base_persona(state.get("news_cache", ""), aer)
+
+    # AER 自動調節
+    aer = generate_AER(user_text, state)
+    state["affinity"] = aer["affinity"]
 
     messages = [{"role": "system", "content": persona}] + history
     messages.append({"role": "user", "content": user_text})
@@ -275,6 +280,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
