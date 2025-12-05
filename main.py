@@ -272,7 +272,7 @@ def main():
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
 
     # 每 5 分鐘推播一次
-    app.job_queue.run_repeating(active_push, interval=300, first=10)
+    app.job_queue.run_repeating(active_push, interval=18000, first=10)
 
     print("🚀 Congyin V7.0 is running.")
     app.run_polling()
@@ -280,6 +280,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
