@@ -1,66 +1,94 @@
 import re
 
-def analyze_user_message(text: str):
+def analyze_emotion(user_text):
     """
-    將使用者訊息分析成 AER（Auto Emotion Regulator）狀態。
-    輸出格式：
+    分析使用者語氣情緒 → low / neutral / high
+    """
+
+    low_words = ["難過", "累", "不想", "沒力氣", "孤單", "壓力", "討厭自己", "痛"]
+    high_words = ["開心", "哈哈", "好耶", "嗨", "太棒", "喜歡", "爽"]
+
+    score = 0
+
+    for w in low_words:
+        if w in user_text:
+            score -= 1
+
+    for w in high_words:
+        if w in user_text:
+            score += 1
+
+    if score <= -1:
+        return "low"
+    if score >= 1:
+        return "high"
+    return "neutral"
+
+
+def compute_gesture_level(emotion):
+    """
+    emotion → gesture 等級 (1~3)
+    """
+    if emotion == "low":
+        return 1
+    elif emotion == "high":
+        return 3
+    return 2
+
+
+def compute_affinity(previous_affinity, user_text):
+    """
+    根據使用者語氣調整親密度 (0.0~1.0)
+    """
+
+    affinity = previous_affinity
+
+    # 🩹 使用者文本越短 → AI 自動靠近你（因為你看起來沒有精神）
+    if len(user_text) < 6:
+        affinity += 0.03
+
+    # 🩹 撒嬌、情感字詞 → 增加親密度
+    if any(w in user_text for w in ["想你", "喜歡", "陪我", "抱", "靠", "在嗎"]):
+        affinity += 0.05
+
+    # 🩹 情緒低 → 啟動保護模式
+    if any(w in user_text for w in ["難過", "累", "不舒服", "不想"]):
+        affinity += 0.05
+
+    affinity = min(1.0, max(0.0, affinity))
+    return affinity
+
+
+def compute_reply_length(user_text):
+    """
+    使用者講話長度 → AI 回覆長度
+    """
+    if len(user_text) < 6:
+        return "short"
+    if len(user_text) < 25:
+        return "normal"
+    return "long"
+
+
+def generate_AER(user_text, state):
+    """
+    回傳 AER 結構：
     {
         "emotion": "low / neutral / high",
+        "gesture": 1~3,
         "affinity": float,
-        "gesture": 0~3,
         "length": "short / normal / long"
     }
     """
 
-    text = text.strip()
-
-    # ---------------------------
-    # 1. Emotion / gesture 偵測
-    # ---------------------------
-    low_keywords = ["累", "難過", "不想", "沒力", "不好", "算了", "唉", "煩"]
-    high_keywords = ["哈哈", "好耶", "太棒", "超爽", "興奮", "快樂", "nice", "好開心"]
-
-    emotion = "neutral"
-    gesture = 1
-
-    if any(k in text for k in low_keywords):
-        emotion = "low"
-        gesture = 1
-    elif any(k in text for k in high_keywords):
-        emotion = "high"
-        gesture = 3
-    else:
-        emotion = "neutral"
-        gesture = 2
-
-    # ---------------------------
-    # 2. 親密度（affinity）
-    # ---------------------------
-    affinity = 1.0
-
-    if "聰音" in text or "你" in text:
-        affinity += 0.2
-    if "想你" in text or "喜歡" in text:
-        affinity += 0.4
-    if "抱" in text or "陪" in text:
-        affinity += 0.3
-
-    # clamp
-    affinity = min(2.0, max(0.6, affinity))
-
-    # ---------------------------
-    # 3. 回覆長度判斷
-    # ---------------------------
-    if len(text) < 6:
-        length = "short"
-    elif len(text) < 20:
-        length = "normal"
-    else:
-        length = "long"
+    emotion = analyze_emotion(user_text)
+    affinity = compute_affinity(state.get("affinity", 0.5), user_text)
+    gesture = compute_gesture_level(emotion)
+    length = compute_reply_length(user_text)
 
     return {
         "emotion": emotion,
-        "affinity": affinity,
         "gesture": gesture,
+        "affinity": affinity,
         "length": length
     }
