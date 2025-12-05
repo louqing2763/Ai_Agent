@@ -268,11 +268,11 @@ def main():
     app.job_queue.run_repeating(active_push, interval=1800, first=10)
 
     # 啟動問候
-    app.post_init.append(on_startup)
-
+    app.post_init = on_startup
     print("🚀 Congyin V7.5 is running.")
     app.run_polling()
 
 
 if __name__ == "__main__":
     main()
+
