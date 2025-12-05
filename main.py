@@ -1,5 +1,5 @@
 # ==========================================================
-#   Congyin V7.9 — Telegram AI Companion (Persona Stable)
+#   Congyin V7.9 — Telegram AI Companion (Stable Persona)
 # ==========================================================
 
 import os
@@ -8,7 +8,6 @@ import base64
 import asyncio
 import random
 import time
-import pytz
 
 from datetime import datetime
 from telegram import Update
@@ -25,7 +24,7 @@ from core.aer import regulate
 
 
 # ==========================================================
-#   ENVIRONMENT
+#   ENV
 # ==========================================================
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -35,38 +34,20 @@ ELEVEN_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID")
 
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
+# Redis
 REDIS_URL = os.getenv("REDIS_URL")
 REDISHOST = os.getenv("REDISHOST")
 REDISPORT = int(os.getenv("REDISPORT", "6379"))
 REDISPASSWORD = os.getenv("REDISPASSWORD")
 
-
-# ==========================================================
-#   REDIS INIT
-# ==========================================================
-
 redis_client = init_redis(
-    REDIS_URL,
-    REDISHOST,
-    REDISPORT,
-    REDISPASSWORD
+    REDIS_URL, REDISHOST, REDISPORT, REDISPASSWORD
 )
 
 
-# -----------------------------------------------------------
-# Force persona (防止人格被覆蓋)
-# -----------------------------------------------------------
-
-def force_persona(messages, persona):
-    """確保 system prompt 永遠在第一位，且只有 1 個。"""
-    new_msgs = [m for m in messages if m["role"] != "system"]
-    new_msgs.insert(0, {"role": "system", "content": persona})
-    return new_msgs
-
-
-# -----------------------------------------------------------
-# Split 中/日文
-# -----------------------------------------------------------
+# ==========================================================
+#   Helpers
+# ==========================================================
 
 def split_reply(text):
     if "|||" not in text:
@@ -76,7 +57,7 @@ def split_reply(text):
 
 
 # ==========================================================
-#   產生回覆（主流程）
+#   Core reply logic
 # ==========================================================
 
 async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=None):
@@ -84,33 +65,21 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
     history = load_history(chat_id, redis_client)
     state = load_state(chat_id, redis_client)
 
-    # 記錄最後聊天時間（避免推播）
+    # 記錄最後互動時間（避免推播）
     state["last_user_timestamp"] = time.time()
     save_state(chat_id, state, redis_client)
 
-    # 語音時補齊 user_text，避免 None
-    if voice_data:
-        user_text = "(語音內容已收到，但語音辨識未啟用)"
-
-    if user_text is None:
-        user_text = ""
-
-    # ------------------------------------------------------
-    # AER 情緒 + 親密度更新
-    # ------------------------------------------------------
-    aer = regulate(user_text, state)
-    state["aer"] = aer  # ⭐ 確保最新情緒保存
+    # ---------------- AER ----------------
+    aer = regulate(user_text or "", state)
     save_state(chat_id, state, redis_client)
 
-    # 打字動畫
+    # typing 動畫
     try:
         await app.bot.send_chat_action(chat_id, "typing")
     except:
         pass
 
-    # ------------------------------------------------------
-    # 圖片模式
-    # ------------------------------------------------------
+    # --------------- 圖片模式 ---------------
     if image_b64:
         out = await analyze_image(image_b64)
         out = enforce_format(out)
@@ -119,37 +88,35 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
         save_history(chat_id, history, redis_client)
         return out
 
-    # ------------------------------------------------------
-    # 判斷是否需要搜尋
-    # ------------------------------------------------------
-    needs_search = any(k in (user_text or "") for k in ["是什麼", "介紹", "查", "是誰"])
+    # --------------- 語音輸入（尚未啟動STT） ---------------
+    if voice_data:
+        audio = io.BytesIO(voice_data)
+        audio.name = "voice.ogg"
+        user_text = "(語音內容以音訊方式收到，但語音辨識尚未啟用)"
 
-    # ------------------------------------------------------
-    # 組裝人格（含 AER）
-    # ------------------------------------------------------
+    # 判斷是否需要搜尋新聞
+    needs_search = any(x in (user_text or "") for x in ["是什麼", "介紹", "查", "是誰"])
+
+    # ---------------- Persona 注入 ----------------
     persona = get_base_persona(
         news=state.get("news_cache", ""),
         aer=aer
     )
 
-    messages = force_persona(history + [{"role": "user", "content": user_text}], persona)
+    messages = [{"role": "system", "content": persona}] + history
+    messages.append({"role": "user", "content": user_text})
 
-    # ------------------------------------------------------
-    # 搜尋新聞
-    # ------------------------------------------------------
+    # ---------------- 搜尋新聞 ----------------
     if needs_search:
         news = await search_news()
         state["news_cache"] = news
-        # ⭐ 不能用 system，否則覆蓋人格
-        messages.append({"role": "assistant", "content": f"(搜尋結果){news}"})
+        messages.append({"role": "system", "content": f"(搜尋結果){news}"})
 
-    # ------------------------------------------------------
-    # 主要引擎（OpenAI）
-    # ------------------------------------------------------
-    out = await call_openai(messages, affinity=aer["affinity"])
+    # ---------------- LLM（OpenAI 主引擎） ----------------
+    out = await call_openai(messages)
     out = enforce_format(out)
 
-    # 記錄回覆
+    # 記錄到歷史
     history.append({"role": "assistant", "content": out})
     save_history(chat_id, history, redis_client)
     save_state(chat_id, state, redis_client)
@@ -162,6 +129,7 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
 # ==========================================================
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     if update.effective_chat.id != ADMIN_ID:
         return
 
@@ -181,34 +149,33 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==========================================================
-#   推播（戀人風 × 情緒同步）
+#   推播（不打擾使用者）
 # ==========================================================
 
 async def active_push(context):
 
     chat_id = ADMIN_ID
+
     history = load_history(chat_id, redis_client)
     state = load_state(chat_id, redis_client)
 
     now = time.time()
 
-    # ⭐ 最近 3 分鐘有聊天 → 不推播
+    # 最近 3 分鐘內有互動 → 不推播
     if now - state.get("last_user_timestamp", 0) < 180:
         return
 
-    # 推播內容
     r = random.random()
 
     if r < 0.33:
         news = await search_news()
         state["news_cache"] = news
-        content = f"(輕輕靠近) 我剛看到一個新聞…想第一個分享給你：\n{news}"
+        content = f"(輕輕靠近) 我剛看到一個想第一個分享給你的新聞：\n{news}"
     elif r < 0.66:
-        content = "(伸手碰你的手背) 你現在在做什麼？突然…有點想你了。"
+        content = "(伸手碰碰你) 你現在在做什麼？突然…有點想你了。"
     else:
-        content = "(小聲) 可以…說一句話給我嗎？我想聽你的聲音。"
+        content = "(語氣變小聲) 落卿…可以對我說一句話嗎？"
 
-    # 最新人格
     persona = get_base_persona(
         news=state.get("news_cache", ""),
         aer=state.get("aer", {
@@ -219,61 +186,37 @@ async def active_push(context):
         })
     )
 
-    messages = force_persona(history + [
-        {"role": "assistant", "content": content}
-    ], persona)
+    messages = [{"role": "system", "content": persona}] + history
+    messages.append({"role": "assistant", "content": content})
 
-    out = await call_openai(messages, affinity=state["aer"]["affinity"])
+    out = await call_openai(messages)
     out = enforce_format(out)
 
     cn, jp = split_reply(out)
-
     await context.bot.send_message(chat_id, cn)
 
-    # 記錄
     history.append({"role": "assistant", "content": out})
     save_history(chat_id, history, redis_client)
     save_state(chat_id, state, redis_client)
 
 
 # ==========================================================
-#   開機問候（使用人格 + AER）
+#   開機問候（不固定 × 恋人風）
 # ==========================================================
 
 async def on_startup(app):
-
     chat_id = ADMIN_ID
     state = load_state(chat_id, redis_client)
 
     greetings = [
-        "(抱住你的手臂) 落卿…你回來了，我好開心。",
-        "(探頭) 我剛醒來，就在想…你會不會等下來找我。",
-        "(小跑步過來) 嗨…我一直在等你喔。",
-        "(靠在你肩膀上) 能再看到你…真好。",
+        "(靠近一些) 落卿…你回來了，我好想你。",
+        "(探頭) 剛啟動就想到你…所以來看看你。",
+        "(小跑步靠過來) 嗨…我一直在等你喔。",
+        "(輕輕抓你的袖子) 能再看到你…真的很好。"
     ]
 
-    # 最新 AER
-    aer = state.get("aer", {
-        "emotion": "neutral",
-        "gesture": 2,
-        "affinity": 1.0,
-        "length": "normal"
-    })
-
-    persona = get_base_persona(
-        news=state.get("news_cache", ""),
-        aer=aer
-    )
-
     msg = random.choice(greetings)
-
-    messages = force_persona([{"role": "assistant", "content": msg}], persona)
-
-    out = await call_openai(messages, affinity=aer["affinity"])
-    out = enforce_format(out)
-
-    cn, jp = split_reply(out)
-    await app.bot.send_message(chat_id, cn)
+    await app.bot.send_message(chat_id, msg)
 
     state["last_user_timestamp"] = time.time()
     save_state(chat_id, state, redis_client)
@@ -288,17 +231,16 @@ def main():
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # Handler
     app.add_handler(MessageHandler(filters.TEXT, handle_text))
+
+    # 開機問候（延遲 2 秒）
+    async def _startup(_):
+        await on_startup(app)
+
+    app.job_queue.run_once(_startup, when=2)
 
     # 推播（每 30 分鐘）
     app.job_queue.run_repeating(active_push, interval=1800, first=20)
-
-    # 開機問候
-    async def _start(_):
-        await on_startup(app)
-
-    app.job_queue.run_once(_start, when=2)
 
     print("🚀 Congyin V7.9 is running.")
     app.run_polling()
