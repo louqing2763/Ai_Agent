@@ -61,6 +61,93 @@ def split_reply(text):
         return text, text
     cn, jp = text.split("|||", 1)
     return cn.strip(), jp.strip()
+# =============================================================
+# AER — 自動情緒調節器
+# =============================================================
+
+import math
+import time
+
+def infer_emotion(text: str):
+    """依訊息判斷情緒強度: low / neutral / high"""
+
+    if not text:
+        return "neutral"
+
+    # 判斷低氣壓
+    low_keywords = ["不好", "累", "煩", "厭", "算了", "不想", "沒力氣", "哭", "心情差"]
+    if any(k in text for k in low_keywords):
+        return "low"
+
+    # 判斷高能量
+    high_keywords = ["哈哈", "ww", "太好", "好爽", "耶", "超棒", "!!", "?!", "期待"]
+    if any(k in text for k in high_keywords):
+        return "high"
+
+    return "neutral"
+
+
+def infer_affinity(history, last_timestamp):
+    """
+    根據最近互動時間與聊天流暢度推算親密度 (0.0 ~ 1.5)
+    你越常跟她講話，她越靠近（Affinity 上升）
+    你很久不講話，她會比平常更貼心但稍稍變得安靜（Affinity 稍降）
+    """
+
+    now = time.time()
+    silence = now - last_timestamp  # 秒
+
+    # 基礎親密度
+    affinity = 1.0
+
+    # 若沉默超過 20 分鐘 → 稍微下降
+    if silence > 1200:
+        affinity -= 0.2
+
+    # 若沉默超過 2 小時 → 更低
+    if silence > 7200:
+        affinity -= 0.4
+
+    # 互動越頻繁 → 上升
+    if len(history) >= 10:
+        affinity += 0.1
+    if len(history) >= 30:
+        affinity += 0.15
+
+    # 限制範圍
+    return max(0.5, min(1.5, affinity))
+
+
+def infer_gesture_level(emotion, affinity):
+    """
+    根據她對落卿的親密度 & 你的情緒，決定動作量：
+    0 = 幾乎沒動作（怕你不舒服）
+    1 = 一個小動作
+    2 = 1-2 個動作
+    3 = 2-3 個動作（很黏、很靠近）
+    """
+
+    if emotion == "low":
+        return 1 if affinity < 1.0 else 2   # 若你低落，她會更貼心
+
+    if emotion == "high":
+        return 2 if affinity < 1.0 else 3
+
+    # neutral
+    if affinity > 1.3:
+        return 3
+    if affinity > 1.0:
+        return 2
+    return 1
+
+
+def infer_reply_length(emotion):
+    """決定回覆長度 short / normal / long"""
+    if emotion == "low":
+        return "long"   # 你低落 → 她會多說話
+    if emotion == "high":
+        return "normal"
+    return "normal"
 
 
 # --------------------------------------------------------------
@@ -275,5 +362,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
