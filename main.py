@@ -1,5 +1,5 @@
 # ==========================================================
-#   Congyin V7.1 — Telegram AI Companion (Modular Version)
+#   Congyin V7.2 — Telegram AI Companion (Modular Version)
 #   Author: 落卿
 # ==========================================================
 
@@ -12,7 +12,8 @@ import pytz
 
 from datetime import datetime
 from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, MessageHandler,
+filters, ContextTypes
 
 # ---- modules -------------------------------------------------
 from core.persona import get_base_persona
@@ -52,6 +53,19 @@ redis_client = init_redis(
 
 
 # --------------------------------------------------------------
+# AER Default State
+# --------------------------------------------------------------
+
+def get_default_aer():
+    return {
+        "emotion": "neutral",   # low / neutral / high
+        "gesture": 2,           # 1 ~ 3
+        "affinity": 0.5,        # 0.0 ~ 1.0
+        "length": "normal"      # short / normal / long
+    }
+
+
+# --------------------------------------------------------------
 # Split 中文 / 日文
 # --------------------------------------------------------------
 
@@ -63,13 +77,19 @@ def split_reply(text):
 
 
 # --------------------------------------------------------------
-# 產生回覆（主處理流程）
+# 產生回覆（主流程）
 # --------------------------------------------------------------
 
 async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=None):
 
     history = load_history(chat_id, redis_client)
     state = load_state(chat_id, redis_client)
+
+    # 若 state 沒有 AER → 初始化
+    if "aer" not in state:
+        state["aer"] = get_default_aer()
+
+    aer = state["aer"]
 
     # 輸入中動畫
     try:
@@ -90,7 +110,7 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
     if voice_data:
         audio = io.BytesIO(voice_data)
         audio.name = "voice.ogg"
-        user_text = "(語音轉文字目前未啟用)"
+        user_text = "(語音轉文字尚未啟用)"
 
     # ------------------- 是否需要搜尋 -------------------
     needs_search = any(k in (user_text or "") for k in ["是什麼", "介紹", "查", "是誰"])
@@ -98,7 +118,7 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
     # ------------------- 組裝人物設定 -------------------
     persona = get_base_persona(
         news = state.get("news_cache", ""),
-        aer = state.get("aer", 1.0)    # ⭐ 修正：呼叫時補上 aer
+        aer = aer
     )
 
     messages = [{"role": "system", "content": persona}] + history
@@ -135,6 +155,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     state = load_state(chat_id, redis_client)
 
+    # 若未初始化 AER → 初始化
+    if "aer" not in state:
+        state["aer"] = get_default_aer()
+
     # 語音模式開關
     if "開啟語音" in text:
         state["voice_mode"] = True
@@ -165,6 +189,10 @@ async def handle_photo(update: Update, context):
         return
 
     chat_id = ADMIN_ID
+    state = load_state(chat_id, redis_client)
+
+    if "aer" not in state:
+        state["aer"] = get_default_aer()
 
     f = await update.message.photo[-1].get_file()
     data = await f.download_as_bytearray()
@@ -175,7 +203,6 @@ async def handle_photo(update: Update, context):
 
     await update.message.reply_text(cn)
 
-    state = load_state(chat_id, redis_client)
     if state.get("voice_mode"):
         audio = tts_jp(jp, ELEVEN_API_KEY, ELEVEN_VOICE_ID)
         if audio:
@@ -187,6 +214,10 @@ async def handle_voice(update: Update, context):
         return
 
     chat_id = ADMIN_ID
+    state = load_state(chat_id, redis_client)
+
+    if "aer" not in state:
+        state["aer"] = get_default_aer()
 
     f = await update.message.voice.get_file()
     data = await f.download_as_bytearray()
@@ -196,7 +227,6 @@ async def handle_voice(update: Update, context):
 
     await update.message.reply_text(cn)
 
-    state = load_state(chat_id, redis_client)
     if state.get("voice_mode"):
         audio = tts_jp(jp, ELEVEN_API_KEY, ELEVEN_VOICE_ID)
         if audio:
@@ -204,7 +234,7 @@ async def handle_voice(update: Update, context):
 
 
 # --------------------------------------------------------------
-# 不限次數推播
+# 推播（定時主動訊息）
 # --------------------------------------------------------------
 
 async def active_push(context):
@@ -213,26 +243,34 @@ async def active_push(context):
     history = load_history(chat_id, redis_client)
     state = load_state(chat_id, redis_client)
 
+    # 未初始化 AER → 初始化
+    if "aer" not in state:
+        state["aer"] = get_default_aer()
+
+    aer = state["aer"]
+
     # 若 chatbot 在睡眠 → 不推播
     if state.get("sleeping"):
         return
 
-    # 推播類型
+    # 推播內容類型
     r = random.random()
 
     if r < 0.33:
         news = await search_news()
         state["news_cache"] = news
         content = f"(輕快跑來) 給你看個我剛看到的：\n{news}"
+
     elif r < 0.66:
         content = "(探頭) 你現在在做什麼？我有點想你。"
+
     else:
         content = "(靠近) 可以跟我說一句話嗎？我想聽。"
 
-    # ⭐ 修正：推播時也需要 aer
+    # Persona
     persona = get_base_persona(
         news = state.get("news_cache", ""),
-        aer = state.get("aer", 1.0)
+        aer = aer
     )
 
     messages = [{"role": "system", "content": persona}] + history
@@ -268,10 +306,10 @@ def main():
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
 
-    # 每 5 分鐘推播一次
+    # 每 5 小時推播一次（18000 秒）
     app.job_queue.run_repeating(active_push, interval=18000, first=10)
 
-    print("🚀 Congyin V7.1 is running.")
+    print("🚀 Congyin V7.2 is running.")
     app.run_polling()
 
 
