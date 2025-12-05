@@ -1,5 +1,5 @@
 # ==========================================================
-#   Congyin V7.0 — Telegram AI Companion (Modular Version)
+#   Congyin V7.1 — Telegram AI Companion (Modular Version)
 #   Author: 落卿
 # ==========================================================
 
@@ -19,17 +19,15 @@ from core.persona import get_base_persona
 from core.llm import call_openai, call_deepseek, enforce_format
 from core.redis_store import init_redis, save_history, load_history, save_state, load_state
 from core.news import search_news
-from core.utils import now_taipei
 from core.vision import analyze_image
 from core.tts import tts_jp
-from core.aer import generate_AER
+
 
 # ------------------------ ENV --------------------------------
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY")
 DEEPSEEK_API_KEY    = os.getenv("DEEPSEEK_API_KEY")
-print("DEEPSEEK_API_KEY =", DEEPSEEK_API_KEY)
 ELEVEN_API_KEY      = os.getenv("ELEVENLABS_API_KEY")
 ELEVEN_VOICE_ID     = os.getenv("ELEVENLABS_VOICE_ID")
 
@@ -39,6 +37,7 @@ REDIS_URL      = os.getenv("REDIS_URL")
 REDISHOST      = os.getenv("REDISHOST")
 REDISPORT      = int(os.getenv("REDISPORT", "6379"))
 REDISPASSWORD  = os.getenv("REDISPASSWORD")
+
 
 # --------------------------------------------------------------
 # Redis Init
@@ -51,7 +50,6 @@ redis_client = init_redis(
     REDISPASSWORD
 )
 
-print("Redis client =", redis_client)
 
 # --------------------------------------------------------------
 # Split 中文 / 日文
@@ -73,7 +71,7 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
     history = load_history(chat_id, redis_client)
     state = load_state(chat_id, redis_client)
 
-    # 優化：顯示「輸入中」
+    # 輸入中動畫
     try:
         await app.bot.send_chat_action(chat_id, "typing")
     except:
@@ -88,23 +86,20 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
         save_history(chat_id, history, redis_client)
         return out
 
-    # ------------------- 語音 → 文字 -------------------
+    # ------------------- 語音模式（暫時簡化） -------------------
     if voice_data:
-        # 避免讓 Whisper 成為 bottleneck → 先簡化流程
         audio = io.BytesIO(voice_data)
         audio.name = "voice.ogg"
-        text = "(語音轉文字已關閉：如需啟用可再加入)"
-        user_text = text
+        user_text = "(語音轉文字目前未啟用)"
 
-    # ------------------- 搜尋觸發 -------------------
+    # ------------------- 是否需要搜尋 -------------------
     needs_search = any(k in (user_text or "") for k in ["是什麼", "介紹", "查", "是誰"])
 
     # ------------------- 組裝人物設定 -------------------
-    persona = get_base_persona(state.get("news_cache", ""), aer)
-
-    # AER 自動調節
-    aer = generate_AER(user_text, state)
-    state["affinity"] = aer["affinity"]
+    persona = get_base_persona(
+        news = state.get("news_cache", ""),
+        aer = state.get("aer", 1.0)    # ⭐ 修正：呼叫時補上 aer
+    )
 
     messages = [{"role": "system", "content": persona}] + history
     messages.append({"role": "user", "content": user_text})
@@ -138,10 +133,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id = ADMIN_ID
     text = update.message.text
-
     state = load_state(chat_id, redis_client)
 
-    # 切換語音模式
+    # 語音模式開關
     if "開啟語音" in text:
         state["voice_mode"] = True
         save_state(chat_id, state, redis_client)
@@ -154,7 +148,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("(語音模式關閉)")
         return
 
-    # 主要回覆
+    # 一般回覆
     out = await generate_reply(chat_id, user_text=text)
     cn, jp = split_reply(out)
 
@@ -210,7 +204,7 @@ async def handle_voice(update: Update, context):
 
 
 # --------------------------------------------------------------
-# Push System（不限次數推播）
+# 不限次數推播
 # --------------------------------------------------------------
 
 async def active_push(context):
@@ -229,15 +223,18 @@ async def active_push(context):
     if r < 0.33:
         news = await search_news()
         state["news_cache"] = news
-        content = f"(輕快地跑過來) 給你看個我剛看到的：\n{news}"
-
+        content = f"(輕快跑來) 給你看個我剛看到的：\n{news}"
     elif r < 0.66:
-        content = "(探頭) 你現在在做什麼？有一點點想你。"
-
+        content = "(探頭) 你現在在做什麼？我有點想你。"
     else:
         content = "(靠近) 可以跟我說一句話嗎？我想聽。"
 
-    persona = get_base_persona(state.get("news_cache", ""))
+    # ⭐ 修正：推播時也需要 aer
+    persona = get_base_persona(
+        news = state.get("news_cache", ""),
+        aer = state.get("aer", 1.0)
+    )
+
     messages = [{"role": "system", "content": persona}] + history
     messages.append({"role": "assistant", "content": content})
 
@@ -274,14 +271,9 @@ def main():
     # 每 5 分鐘推播一次
     app.job_queue.run_repeating(active_push, interval=18000, first=10)
 
-    print("🚀 Congyin V7.0 is running.")
+    print("🚀 Congyin V7.1 is running.")
     app.run_polling()
 
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
