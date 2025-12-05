@@ -1,5 +1,5 @@
 # ==========================================================
-#   Congyin V7.2 — Telegram AI Companion (Modular Version)
+#   Congyin V7.3 — High-Realism Emotional AI Companion
 #   Author: 落卿
 # ==========================================================
 
@@ -8,20 +8,22 @@ import io
 import base64
 import asyncio
 import random
-import pytz
-
 from datetime import datetime
-from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler,
-filters, ContextTypes
 
-# ---- modules -------------------------------------------------
+from telegram import Update
+from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+
+# ------------------- modules -------------------------------
 from core.persona import get_base_persona
 from core.llm import call_openai, call_deepseek, enforce_format
 from core.redis_store import init_redis, save_history, load_history, save_state, load_state
 from core.news import search_news
 from core.vision import analyze_image
 from core.tts import tts_jp
+
+# AER 系統（短期＋長期情緒）
+from core.aer import generate_AER
+from core.emotion import regulate
 
 
 # ------------------------ ENV --------------------------------
@@ -40,9 +42,7 @@ REDISPORT      = int(os.getenv("REDISPORT", "6379"))
 REDISPASSWORD  = os.getenv("REDISPASSWORD")
 
 
-# --------------------------------------------------------------
-# Redis Init
-# --------------------------------------------------------------
+# ---------------------- Redis Init ------------------------------
 
 redis_client = init_redis(
     REDIS_URL,
@@ -52,32 +52,31 @@ redis_client = init_redis(
 )
 
 
-# --------------------------------------------------------------
-# AER Default State
-# --------------------------------------------------------------
-
-def get_default_aer():
-    return {
-        "emotion": "neutral",   # low / neutral / high
-        "gesture": 2,           # 1 ~ 3
-        "affinity": 0.5,        # 0.0 ~ 1.0
-        "length": "normal"      # short / normal / long
-    }
-
-
-# --------------------------------------------------------------
-# Split 中文 / 日文
-# --------------------------------------------------------------
+# ---------------------- 工具函式 ------------------------------
 
 def split_reply(text):
+    """切割中日文回覆"""
     if "|||" not in text:
         return text, text
     cn, jp = text.split("|||", 1)
     return cn.strip(), jp.strip()
 
 
+def init_aer_state(state):
+    """初始化 AER 狀態（若不存在）"""
+    if "aer" not in state:
+        state["aer"] = {
+            "emotion": "neutral",
+            "gesture": 1,
+            "affinity": 1.0,
+            "length": "normal",
+            "last_timestamp": 0
+        }
+    return state
+
+
 # --------------------------------------------------------------
-# 產生回覆（主流程）
+# 產生回覆（主要邏輯）
 # --------------------------------------------------------------
 
 async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=None):
@@ -85,11 +84,8 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
     history = load_history(chat_id, redis_client)
     state = load_state(chat_id, redis_client)
 
-    # 若 state 沒有 AER → 初始化
-    if "aer" not in state:
-        state["aer"] = get_default_aer()
-
-    aer = state["aer"]
+    # 初始化 AER 狀態
+    state = init_aer_state(state)
 
     # 輸入中動畫
     try:
@@ -97,7 +93,7 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
     except:
         pass
 
-    # ------------------- 圖片模式 ---------------------
+    # ------------------- 圖片模式 -------------------
     if image_b64:
         out = await analyze_image(image_b64)
         out = enforce_format(out)
@@ -106,19 +102,34 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
         save_history(chat_id, history, redis_client)
         return out
 
-    # ------------------- 語音模式（暫時簡化） -------------------
+    # ------------------- 語音模式 -------------------
     if voice_data:
-        audio = io.BytesIO(voice_data)
-        audio.name = "voice.ogg"
         user_text = "(語音轉文字尚未啟用)"
+
+    # ------------------- 情緒系統（短期 AER） -------------------
+    short_term_aer = generate_AER(user_text, state["aer"])
+
+    # ------------------- 情緒系統（長期人格漂移） -------------------
+    long_term_aer = regulate(user_text, state["aer"])
+
+    # ------------------- 合併成最終 AER -------------------
+    final_AER = {
+        "emotion": short_term_aer["emotion"],
+        "gesture": max(short_term_aer["gesture"], long_term_aer["gesture"]),
+        "affinity": (short_term_aer["affinity"] + long_term_aer["affinity"]) / 2,
+        "length": short_term_aer["length"]
+    }
+
+    # 儲存 AER
+    state["aer"].update(final_AER)
 
     # ------------------- 是否需要搜尋 -------------------
     needs_search = any(k in (user_text or "") for k in ["是什麼", "介紹", "查", "是誰"])
 
-    # ------------------- 組裝人物設定 -------------------
+    # ------------------- 組裝 persona -------------------
     persona = get_base_persona(
         news = state.get("news_cache", ""),
-        aer = aer
+        aer = state["aer"]
     )
 
     messages = [{"role": "system", "content": persona}] + history
@@ -135,8 +146,8 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
 
     out = enforce_format(out)
 
+    # 儲存歷史
     history.append({"role": "assistant", "content": out})
-
     save_history(chat_id, history, redis_client)
     save_state(chat_id, state, redis_client)
 
@@ -148,36 +159,35 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
 # --------------------------------------------------------------
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     if update.effective_chat.id != ADMIN_ID:
         return
 
     chat_id = ADMIN_ID
     text = update.message.text
     state = load_state(chat_id, redis_client)
+    state = init_aer_state(state)
 
-    # 若未初始化 AER → 初始化
-    if "aer" not in state:
-        state["aer"] = get_default_aer()
-
-    # 語音模式開關
+    # 語音模式切換
     if "開啟語音" in text:
         state["voice_mode"] = True
         save_state(chat_id, state, redis_client)
-        await update.message.reply_text("(語音模式啟動)")
+        await update.message.reply_text("(語音模式已啟動)")
         return
 
     if "關閉語音" in text:
         state["voice_mode"] = False
         save_state(chat_id, state, redis_client)
-        await update.message.reply_text("(語音模式關閉)")
+        await update.message.reply_text("(語音模式已關閉)")
         return
 
-    # 一般回覆
+    # 生成回覆
     out = await generate_reply(chat_id, user_text=text)
     cn, jp = split_reply(out)
 
     await update.message.reply_text(cn)
 
+    # 語音模式
     if state.get("voice_mode"):
         audio = tts_jp(jp, ELEVEN_API_KEY, ELEVEN_VOICE_ID)
         if audio:
@@ -190,9 +200,7 @@ async def handle_photo(update: Update, context):
 
     chat_id = ADMIN_ID
     state = load_state(chat_id, redis_client)
-
-    if "aer" not in state:
-        state["aer"] = get_default_aer()
+    state = init_aer_state(state)
 
     f = await update.message.photo[-1].get_file()
     data = await f.download_as_bytearray()
@@ -200,7 +208,6 @@ async def handle_photo(update: Update, context):
 
     out = await generate_reply(chat_id, image_b64=b64)
     cn, jp = split_reply(out)
-
     await update.message.reply_text(cn)
 
     if state.get("voice_mode"):
@@ -215,16 +222,13 @@ async def handle_voice(update: Update, context):
 
     chat_id = ADMIN_ID
     state = load_state(chat_id, redis_client)
-
-    if "aer" not in state:
-        state["aer"] = get_default_aer()
+    state = init_aer_state(state)
 
     f = await update.message.voice.get_file()
     data = await f.download_as_bytearray()
 
     out = await generate_reply(chat_id, voice_data=data)
     cn, jp = split_reply(out)
-
     await update.message.reply_text(cn)
 
     if state.get("voice_mode"):
@@ -234,43 +238,37 @@ async def handle_voice(update: Update, context):
 
 
 # --------------------------------------------------------------
-# 推播（定時主動訊息）
+# 推播（會影響情緒）
 # --------------------------------------------------------------
 
 async def active_push(context):
+
     chat_id = ADMIN_ID
+    state = load_state(chat_id, redis_client)
+    state = init_aer_state(state)
 
     history = load_history(chat_id, redis_client)
-    state = load_state(chat_id, redis_client)
 
-    # 未初始化 AER → 初始化
-    if "aer" not in state:
-        state["aer"] = get_default_aer()
-
-    aer = state["aer"]
-
-    # 若 chatbot 在睡眠 → 不推播
     if state.get("sleeping"):
         return
 
-    # 推播內容類型
     r = random.random()
 
     if r < 0.33:
         news = await search_news()
         state["news_cache"] = news
-        content = f"(輕快跑來) 給你看個我剛看到的：\n{news}"
-
+        content = f"(輕快跑來) 給你看我剛看到的：\n{news}"
     elif r < 0.66:
         content = "(探頭) 你現在在做什麼？我有點想你。"
-
     else:
-        content = "(靠近) 可以跟我說一句話嗎？我想聽。"
+        content = "(靠近) 可以跟我說一句話嗎？我好像……有點想聽你的聲音。"
 
-    # Persona
+    # 推播時，親密度稍微提升（她主動找你）
+    state["aer"]["affinity"] = min(2.0, state["aer"]["affinity"] + 0.03)
+
     persona = get_base_persona(
         news = state.get("news_cache", ""),
-        aer = aer
+        aer = state["aer"]
     )
 
     messages = [{"role": "system", "content": persona}] + history
@@ -280,7 +278,6 @@ async def active_push(context):
     out = enforce_format(out)
 
     cn, jp = split_reply(out)
-
     await context.bot.send_message(chat_id, cn)
 
     if state.get("voice_mode"):
@@ -299,17 +296,16 @@ async def active_push(context):
 
 def main():
     global app
-
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
     app.add_handler(MessageHandler(filters.TEXT, handle_text))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
 
-    # 每 5 小時推播一次（18000 秒）
+    # 每五小時推播
     app.job_queue.run_repeating(active_push, interval=18000, first=10)
 
-    print("🚀 Congyin V7.2 is running.")
+    print("🚀 Congyin V7.3 is running.")
     app.run_polling()
 
 
