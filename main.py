@@ -1,6 +1,5 @@
 # ==========================================================
-#   Congyin V7.4 — Telegram AI Companion (Enhanced Continuity)
-#   改進：推播不打擾聊天、情緒承接、AER 整合
+#   Congyin V7.5 — Telegram AI Companion (Continuity Mode)
 # ==========================================================
 
 import os
@@ -8,12 +7,16 @@ import io
 import base64
 import asyncio
 import random
-import pytz
 import time
 
 from datetime import datetime
 from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+from telegram.ext import (
+    ApplicationBuilder,
+    MessageHandler,
+    filters,
+    ContextTypes
+)
 
 # ---- core modules -------------------------------------------------
 from core.persona import get_base_persona
@@ -26,7 +29,6 @@ from core.aer import regulate
 
 
 # ------------------------ ENV --------------------------------
-
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY")
 ELEVEN_API_KEY      = os.getenv("ELEVENLABS_API_KEY")
@@ -51,8 +53,20 @@ redis_client = init_redis(
     REDISPASSWORD
 )
 
+
 # --------------------------------------------------------------
-# 啟動問候（依照上一個情緒自然延續）
+# Split 中文 / 日文
+# --------------------------------------------------------------
+
+def split_reply(text):
+    if "|||" not in text:
+        return text, text
+    cn, jp = text.split("|||", 1)
+    return cn.strip(), jp.strip()
+
+
+# --------------------------------------------------------------
+# 啟動問候（依照上次情緒自然延續）
 # --------------------------------------------------------------
 
 async def startup_greeting(app, chat_id, redis_client):
@@ -70,49 +84,31 @@ async def startup_greeting(app, chat_id, redis_client):
 
     規則：
     - 不要提到系統、重啟、更新、機器人
-    - 要像上一秒延續，語氣自然、柔軟、帶動作
-    - 中日文以 "|||" 分隔，格式與 persona 統一
-    - 內容以一句溫柔的問候為主，不要太長
-
-    情緒參考：
-    low：柔軟、想依靠、剛醒來、靠近你
-    neutral：溫柔平靜、像伸懶腰醒來
-    high：開心期待、像看到你就亮起來
+    - 像上一秒的情緒被延續
+    - 用一段柔軟、自然、有動作的問候
+    - 只能使用中日雙語格式：中文|||日文
     """
 
     messages = [{"role": "system", "content": prompt}]
     out = await call_openai(messages)
     out = enforce_format(out)
 
-    cn, jp = out.split("|||", 1)
+    cn, jp = split_reply(out)
 
-    # 傳訊息給你
-    await app.bot.send_message(chat_id, cn.strip())
+    await app.bot.send_message(chat_id, cn)
 
-    # 若語音模式開啟 → 回語音
     if state.get("voice_mode"):
-        audio = tts_jp(jp.strip(), ELEVEN_API_KEY, ELEVEN_VOICE_ID)
+        audio = tts_jp(jp, ELEVEN_API_KEY, ELEVEN_VOICE_ID)
         if audio:
             await app.bot.send_voice(chat_id, audio)
 
-    # 不記錄到 history，避免混淆對話流
-    # 但記錄當前 emotion 狀態
+    # 標記啟動時間，避免啟動後立即推播
     state["last_user_timestamp"] = time.time()
     save_state(chat_id, state, redis_client)
 
-# --------------------------------------------------------------
-# Split 中文 / 日文
-# --------------------------------------------------------------
-
-def split_reply(text):
-    if "|||" not in text:
-        return text, text
-    cn, jp = text.split("|||", 1)
-    return cn.strip(), jp.strip()
-
 
 # --------------------------------------------------------------
-# 產生回覆（主處理流程）
+# 主回覆流程
 # --------------------------------------------------------------
 
 async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=None):
@@ -120,20 +116,22 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
     history = load_history(chat_id, redis_client)
     state = load_state(chat_id, redis_client)
 
-    # 記錄使用者最後一次說話時間（避免推播干擾）
+    # 更新說話時間（避免推播打擾）
     state["last_user_timestamp"] = time.time()
     save_state(chat_id, state, redis_client)
 
-    # AER：情緒與親密度更新
+    # AER：更新情緒數值
     aer = regulate(user_text, state)
+    state["aer"] = aer
     save_state(chat_id, state, redis_client)
 
+    # 打字動畫
     try:
         await app.bot.send_chat_action(chat_id, "typing")
     except:
         pass
 
-    # 圖片
+    # 圖片分析
     if image_b64:
         out = await analyze_image(image_b64)
         out = enforce_format(out)
@@ -142,16 +140,16 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
         save_history(chat_id, history, redis_client)
         return out
 
-    # 語音（暫無 STT）
+    # 語音：目前不轉文字
     if voice_data:
         audio = io.BytesIO(voice_data)
         audio.name = "voice.ogg"
         user_text = "(語音轉文字未啟用)"
 
-    # 搜尋需求判斷
+    # 是否需要搜索
     needs_search = any(k in (user_text or "") for k in ["是什麼", "介紹", "查", "是誰"])
 
-    # 人物設定 + AER
+    # 人設 + AER
     persona = get_base_persona(
         news = state.get("news_cache", ""),
         aer = aer
@@ -210,19 +208,19 @@ async def active_push(context):
 
     now = time.time()
 
-    # ⭐ 3 分鐘內使用者有講話 → 不推播
+    # ⭐ 3 分鐘內使用者講過話 → 不推播
     if now - state.get("last_user_timestamp", 0) < 180:
         return
 
-    # 隨機推播內容
+    # 隨機推播事件
     r = random.random()
 
     if r < 0.33:
         news = await search_news()
         state["news_cache"] = news
-        content = f"(探頭) 我剛看到這個新聞，你看看：\n{news}"
+        content = f"(探頭) 我剛看到一個小消息：\n{news}"
     elif r < 0.66:
-        content = "(輕輕靠過來) 你現在在做什麼？我好像有點想你了。"
+        content = "(輕輕靠過來) 你現在在做什麼？我…有一點想你了。"
     else:
         content = "(小心翼翼抓住你的袖子) 可以說一句話給我嗎？我想聽。"
 
@@ -241,10 +239,18 @@ async def active_push(context):
 
     await context.bot.send_message(chat_id, cn)
 
-    # 加進 history
+    # 保存歷史
     history.append({"role": "assistant", "content": out})
     save_history(chat_id, history, redis_client)
     save_state(chat_id, state, redis_client)
+
+
+# --------------------------------------------------------------
+# Bot 啟動（post_init）
+# --------------------------------------------------------------
+
+async def on_startup(app):
+    await startup_greeting(app, ADMIN_ID, redis_client)
 
 
 # --------------------------------------------------------------
@@ -255,14 +261,18 @@ def main():
     global app
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+
     app.add_handler(MessageHandler(filters.TEXT, handle_text))
+
+    # 推播（每 30 分鐘）
     app.job_queue.run_repeating(active_push, interval=1800, first=10)
 
-    print("🚀 Congyin V7.4 is running.")
-    asyncio.create_task(startup_greeting(app, ADMIN_ID, redis_client))
+    # 啟動問候
+    app.post_init.append(on_startup)
+
+    print("🚀 Congyin V7.5 is running.")
     app.run_polling()
 
 
 if __name__ == "__main__":
     main()
-
