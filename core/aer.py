@@ -1,94 +1,114 @@
-import re
+# ==========================================================
+#  AER — Auto Emotion Regulator V7.4
+#  新增：情緒平滑過渡、避免跳情緒、自然情緒承接
+# ==========================================================
 
-def analyze_emotion(user_text):
-    """
-    分析使用者語氣情緒 → low / neutral / high
-    """
+import time
 
-    low_words = ["難過", "累", "不想", "沒力氣", "孤單", "壓力", "討厭自己", "痛"]
-    high_words = ["開心", "哈哈", "好耶", "嗨", "太棒", "喜歡", "爽"]
+# ----------------------------------------------------------
+# 1. Detect Emotion
+# ----------------------------------------------------------
 
-    score = 0
+def detect_emotion(user_text: str) -> str:
+    if not user_text:
+        return "neutral"
 
-    for w in low_words:
-        if w in user_text:
-            score -= 1
+    low_words = ["好累", "煩", "算了", "不知道", "沒事", "唉", "不想", "累", "難過"]
+    high_words = ["哈哈", "爽爽", "太好了", "好耶", "開心", "興奮"]
 
-    for w in high_words:
-        if w in user_text:
-            score += 1
-
-    if score <= -1:
+    if any(w in user_text for w in low_words):
         return "low"
-    if score >= 1:
+    if any(w in user_text for w in high_words):
         return "high"
     return "neutral"
 
 
-def compute_gesture_level(emotion):
-    """
-    emotion → gesture 等級 (1~3)
-    """
-    if emotion == "low":
-        return 1
-    elif emotion == "high":
-        return 3
-    return 2
+# ----------------------------------------------------------
+# 2. Update Affinity
+# ----------------------------------------------------------
 
+def update_affinity(state: dict):
+    now = time.time()
 
-def compute_affinity(previous_affinity, user_text):
-    """
-    根據使用者語氣調整親密度 (0.0~1.0)
-    """
+    last = state.get("last_timestamp", None)
+    affinity = state.get("affinity", 1.0)
 
-    affinity = previous_affinity
+    state["last_timestamp"] = now
 
-    # 🩹 使用者文本越短 → AI 自動靠近你（因為你看起來沒有精神）
-    if len(user_text) < 6:
-        affinity += 0.03
+    # 距離上一句很久 → 微降
+    if last:
+        diff = now - last
+        if diff > 300:
+            affinity -= 0.03
+        else:
+            affinity += 0.03
 
-    # 🩹 撒嬌、情感字詞 → 增加親密度
-    if any(w in user_text for w in ["想你", "喜歡", "陪我", "抱", "靠", "在嗎"]):
-        affinity += 0.05
-
-    # 🩹 情緒低 → 啟動保護模式
-    if any(w in user_text for w in ["難過", "累", "不舒服", "不想"]):
-        affinity += 0.05
-
-    affinity = min(1.0, max(0.0, affinity))
+    affinity = max(0.5, min(2.0, affinity))
+    state["affinity"] = affinity
     return affinity
 
 
-def compute_reply_length(user_text):
-    """
-    使用者講話長度 → AI 回覆長度
-    """
-    if len(user_text) < 6:
+# ----------------------------------------------------------
+# 3. Gesture Level
+# ----------------------------------------------------------
+
+def gesture_level(emotion: str, affinity: float):
+    if emotion == "low":
+        return 1
+    if emotion == "high":
+        return 2 if affinity < 1.5 else 3
+
+    # neutral
+    if affinity >= 1.7:
+        return 2
+    return 1
+
+
+# ----------------------------------------------------------
+# 4. Reply Length
+# ----------------------------------------------------------
+
+def reply_length(user_text: str, emotion: str):
+    if emotion == "low":
         return "short"
-    if len(user_text) < 25:
-        return "normal"
-    return "long"
+    if len(user_text) > 25:
+        return "long"
+    return "normal"
 
 
-def generate_AER(user_text, state):
-    """
-    回傳 AER 結構：
-    {
-        "emotion": "low / neutral / high",
-        "gesture": 1~3,
-        "affinity": float,
-        "length": "short / normal / long"
-    }
-    """
+# ----------------------------------------------------------
+# 5. Smooth Emotion Transition（最重要）
+# ----------------------------------------------------------
 
-    emotion = analyze_emotion(user_text)
-    affinity = compute_affinity(state.get("affinity", 0.5), user_text)
-    gesture = compute_gesture_level(emotion)
-    length = compute_reply_length(user_text)
+def smooth_emotion(prev: str, now: str):
+    # 高 → 低 / 低 → 高 → 轉成 neutral 過渡
+    if prev == "low" and now == "high":
+        return "neutral"
+    if prev == "high" and now == "low":
+        return "neutral"
+
+    return now
+
+
+# ----------------------------------------------------------
+# 6. Master AER Function
+# ----------------------------------------------------------
+
+def regulate(user_text: str, state: dict):
+    raw_emotion = detect_emotion(user_text)
+    prev_emotion = state.get("emotion", "neutral")
+
+    emotion = smooth_emotion(prev_emotion, raw_emotion)
+    affinity = update_affinity(state)
+    gesture = gesture_level(emotion, affinity)
+    length = reply_length(user_text, emotion)
+
+    # 記錄下次使用
+    state["emotion"] = emotion
 
     return {
         "emotion": emotion,
-        "gesture": gesture,
         "affinity": affinity,
+        "gesture": gesture,
         "length": length
     }
