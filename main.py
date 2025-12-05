@@ -22,7 +22,7 @@ from core.redis_store import init_redis, save_history, load_history, save_state,
 from core.news import search_news
 from core.vision import analyze_image
 from core.tts import tts_jp
-from core.aer import regulate  # ⭐ 新增：AER v7.4
+from core.aer import regulate
 
 
 # ------------------------ ENV --------------------------------
@@ -51,6 +51,54 @@ redis_client = init_redis(
     REDISPASSWORD
 )
 
+# --------------------------------------------------------------
+# 啟動問候（依照上一個情緒自然延續）
+# --------------------------------------------------------------
+
+async def startup_greeting(app, chat_id, redis_client):
+    state = load_state(chat_id, redis_client)
+
+    last_emotion = state.get("emotion", "neutral")
+    affinity = state.get("affinity", 1.0)
+
+    prompt = f"""
+    妳是佐奈聰音，剛啟動完成。
+    請根據「上次情緒」自然接續心情。
+
+    上次情緒：{last_emotion}
+    親密度：{affinity}
+
+    規則：
+    - 不要提到系統、重啟、更新、機器人
+    - 要像上一秒延續，語氣自然、柔軟、帶動作
+    - 中日文以 "|||" 分隔，格式與 persona 統一
+    - 內容以一句溫柔的問候為主，不要太長
+
+    情緒參考：
+    low：柔軟、想依靠、剛醒來、靠近你
+    neutral：溫柔平靜、像伸懶腰醒來
+    high：開心期待、像看到你就亮起來
+    """
+
+    messages = [{"role": "system", "content": prompt}]
+    out = await call_openai(messages)
+    out = enforce_format(out)
+
+    cn, jp = out.split("|||", 1)
+
+    # 傳訊息給你
+    await app.bot.send_message(chat_id, cn.strip())
+
+    # 若語音模式開啟 → 回語音
+    if state.get("voice_mode"):
+        audio = tts_jp(jp.strip(), ELEVEN_API_KEY, ELEVEN_VOICE_ID)
+        if audio:
+            await app.bot.send_voice(chat_id, audio)
+
+    # 不記錄到 history，避免混淆對話流
+    # 但記錄當前 emotion 狀態
+    state["last_user_timestamp"] = time.time()
+    save_state(chat_id, state, redis_client)
 
 # --------------------------------------------------------------
 # Split 中文 / 日文
@@ -211,8 +259,10 @@ def main():
     app.job_queue.run_repeating(active_push, interval=1800, first=10)
 
     print("🚀 Congyin V7.4 is running.")
+    asyncio.create_task(startup_greeting(app, ADMIN_ID, redis_client))
     app.run_polling()
 
 
 if __name__ == "__main__":
     main()
+
