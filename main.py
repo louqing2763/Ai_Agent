@@ -1,5 +1,6 @@
 # ==========================================================
 #   Congyin V7.3 — High-Realism Emotional AI Companion
+#   (OpenAI 主引擎版)
 #   Author: 落卿
 # ==========================================================
 
@@ -15,7 +16,7 @@ from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTyp
 
 # ------------------- modules -------------------------------
 from core.persona import get_base_persona
-from core.llm import call_openai, call_deepseek, enforce_format
+from core.llm import call_openai, enforce_format
 from core.redis_store import init_redis, save_history, load_history, save_state, load_state
 from core.news import search_news
 from core.vision import analyze_image
@@ -30,7 +31,6 @@ from core.emotion import regulate
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY")
-DEEPSEEK_API_KEY    = os.getenv("DEEPSEEK_API_KEY")
 ELEVEN_API_KEY      = os.getenv("ELEVENLABS_API_KEY")
 ELEVEN_VOICE_ID     = os.getenv("ELEVENLABS_VOICE_ID")
 
@@ -56,8 +56,12 @@ redis_client = init_redis(
 
 def split_reply(text):
     """切割中日文回覆"""
+    if "||| " in text:
+        text = text.replace("||| ", "|||")
+
     if "|||" not in text:
         return text, text
+
     cn, jp = text.split("|||", 1)
     return cn.strip(), jp.strip()
 
@@ -135,18 +139,11 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
     messages = [{"role": "system", "content": persona}] + history
     messages.append({"role": "user", "content": user_text})
 
-    # ------------------- LLM Routing -------------------
-    if needs_search:
-        news = await search_news()
-        state["news_cache"] = news
-        messages.append({"role": "system", "content": f"(搜尋結果){news}"})
-        out = await call_openai(messages)
-    else:
-        out = await call_deepseek(messages)
-
+    # ------------------- 使用 OpenAI 作為主引擎 -------------------
+    out = await call_openai(messages)
     out = enforce_format(out)
 
-    # 儲存歷史
+    # 儲存歷史 & 狀態
     history.append({"role": "assistant", "content": out})
     save_history(chat_id, history, redis_client)
     save_state(chat_id, state, redis_client)
@@ -238,7 +235,7 @@ async def handle_voice(update: Update, context):
 
 
 # --------------------------------------------------------------
-# 推播（會影響情緒）
+# 推播
 # --------------------------------------------------------------
 
 async def active_push(context):
@@ -259,11 +256,11 @@ async def active_push(context):
         state["news_cache"] = news
         content = f"(輕快跑來) 給你看我剛看到的：\n{news}"
     elif r < 0.66:
-        content = "(探頭) 你現在在做什麼？我有點想你。"
+        content = "(探頭) 你現在在做什麼？"
     else:
-        content = "(靠近) 可以跟我說一句話嗎？我好像……有點想聽你的聲音。"
+        content = "(靠近) 可以跟我說一句話嗎？"
 
-    # 推播時，親密度稍微提升（她主動找你）
+    # 推播時，親密度稍微提升
     state["aer"]["affinity"] = min(2.0, state["aer"]["affinity"] + 0.03)
 
     persona = get_base_persona(
@@ -274,7 +271,7 @@ async def active_push(context):
     messages = [{"role": "system", "content": persona}] + history
     messages.append({"role": "assistant", "content": content})
 
-    out = await call_deepseek(messages)
+    out = await call_openai(messages)
     out = enforce_format(out)
 
     cn, jp = split_reply(out)
@@ -305,7 +302,7 @@ def main():
     # 每五小時推播
     app.job_queue.run_repeating(active_push, interval=18000, first=10)
 
-    print("🚀 Congyin V7.3 is running.")
+    print("🚀 Congyin V7.3 (OpenAI Edition) is running.")
     app.run_polling()
 
 
