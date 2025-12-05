@@ -1,5 +1,5 @@
 # ==========================================================
-#   Congyin V7.8 — Telegram AI Companion
+#   Congyin V7.9 — Telegram AI Companion (Persona Stable)
 # ==========================================================
 
 import os
@@ -54,6 +54,17 @@ redis_client = init_redis(
 
 
 # -----------------------------------------------------------
+# Force persona (防止人格被覆蓋)
+# -----------------------------------------------------------
+
+def force_persona(messages, persona):
+    """確保 system prompt 永遠在第一位，且只有 1 個。"""
+    new_msgs = [m for m in messages if m["role"] != "system"]
+    new_msgs.insert(0, {"role": "system", "content": persona})
+    return new_msgs
+
+
+# -----------------------------------------------------------
 # Split 中/日文
 # -----------------------------------------------------------
 
@@ -77,13 +88,21 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
     state["last_user_timestamp"] = time.time()
     save_state(chat_id, state, redis_client)
 
+    # 語音時補齊 user_text，避免 None
+    if voice_data:
+        user_text = "(語音內容已收到，但語音辨識未啟用)"
+
+    if user_text is None:
+        user_text = ""
+
     # ------------------------------------------------------
     # AER 情緒 + 親密度更新
     # ------------------------------------------------------
-    aer = regulate(user_text or "", state)
+    aer = regulate(user_text, state)
+    state["aer"] = aer  # ⭐ 確保最新情緒保存
     save_state(chat_id, state, redis_client)
 
-    # Typing animation
+    # 打字動畫
     try:
         await app.bot.send_chat_action(chat_id, "typing")
     except:
@@ -101,14 +120,6 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
         return out
 
     # ------------------------------------------------------
-    # 語音（僅播放，自動文字尚未啟用）
-    # ------------------------------------------------------
-    if voice_data:
-        audio = io.BytesIO(voice_data)
-        audio.name = "voice.ogg"
-        user_text = "(語音內容已收到，但語音辨識未啟用)"
-
-    # ------------------------------------------------------
     # 判斷是否需要搜尋
     # ------------------------------------------------------
     needs_search = any(k in (user_text or "") for k in ["是什麼", "介紹", "查", "是誰"])
@@ -121,8 +132,7 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
         aer=aer
     )
 
-    messages = [{"role": "system", "content": persona}] + history
-    messages.append({"role": "user", "content": user_text})
+    messages = force_persona(history + [{"role": "user", "content": user_text}], persona)
 
     # ------------------------------------------------------
     # 搜尋新聞
@@ -130,7 +140,8 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
     if needs_search:
         news = await search_news()
         state["news_cache"] = news
-        messages.append({"role": "system", "content": f"(搜尋結果){news}"})
+        # ⭐ 不能用 system，否則覆蓋人格
+        messages.append({"role": "assistant", "content": f"(搜尋結果){news}"})
 
     # ------------------------------------------------------
     # 主要引擎（OpenAI）
@@ -154,8 +165,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != ADMIN_ID:
         return
 
-    text = update.message.text
     chat_id = ADMIN_ID
+    text = update.message.text
 
     out = await generate_reply(chat_id, user_text=text)
     cn, jp = split_reply(out)
@@ -170,7 +181,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ==========================================================
-#   推播（戀人風 × 不打擾聊天）
+#   推播（戀人風 × 情緒同步）
 # ==========================================================
 
 async def active_push(context):
@@ -181,7 +192,7 @@ async def active_push(context):
 
     now = time.time()
 
-    # 最近 3 分鐘有聊天 → 不推播
+    # ⭐ 最近 3 分鐘有聊天 → 不推播
     if now - state.get("last_user_timestamp", 0) < 180:
         return
 
@@ -197,6 +208,7 @@ async def active_push(context):
     else:
         content = "(小聲) 可以…說一句話給我嗎？我想聽你的聲音。"
 
+    # 最新人格
     persona = get_base_persona(
         news=state.get("news_cache", ""),
         aer=state.get("aer", {
@@ -207,10 +219,11 @@ async def active_push(context):
         })
     )
 
-    messages = [{"role": "system", "content": persona}] + history
-    messages.append({"role": "assistant", "content": content})
+    messages = force_persona(history + [
+        {"role": "assistant", "content": content}
+    ], persona)
 
-    out = await call_openai(messages, affinity=state.get("affinity", 1.0))
+    out = await call_openai(messages, affinity=state["aer"]["affinity"])
     out = enforce_format(out)
 
     cn, jp = split_reply(out)
@@ -224,7 +237,7 @@ async def active_push(context):
 
 
 # ==========================================================
-#   開機問候（不固定）
+#   開機問候（使用人格 + AER）
 # ==========================================================
 
 async def on_startup(app):
@@ -239,8 +252,28 @@ async def on_startup(app):
         "(靠在你肩膀上) 能再看到你…真好。",
     ]
 
+    # 最新 AER
+    aer = state.get("aer", {
+        "emotion": "neutral",
+        "gesture": 2,
+        "affinity": 1.0,
+        "length": "normal"
+    })
+
+    persona = get_base_persona(
+        news=state.get("news_cache", ""),
+        aer=aer
+    )
+
     msg = random.choice(greetings)
-    await app.bot.send_message(chat_id, msg)
+
+    messages = force_persona([{"role": "assistant", "content": msg}], persona)
+
+    out = await call_openai(messages, affinity=aer["affinity"])
+    out = enforce_format(out)
+
+    cn, jp = split_reply(out)
+    await app.bot.send_message(chat_id, cn)
 
     state["last_user_timestamp"] = time.time()
     save_state(chat_id, state, redis_client)
@@ -255,7 +288,7 @@ def main():
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # 註冊 Handler
+    # Handler
     app.add_handler(MessageHandler(filters.TEXT, handle_text))
 
     # 推播（每 30 分鐘）
@@ -267,7 +300,7 @@ def main():
 
     app.job_queue.run_once(_start, when=2)
 
-    print("🚀 Congyin V7.8 is running.")
+    print("🚀 Congyin V7.9 is running.")
     app.run_polling()
 
 
