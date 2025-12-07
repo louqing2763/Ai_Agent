@@ -9,7 +9,7 @@ from telegram.ext import (
     filters, ContextTypes
 )
 
-from core.persona_config import get_persona, PUSH_LINES
+from core.persona import get_persona, PUSH_LINES
 from core.llm import call_openai, enforce_format
 from core.redis_store import (
     init_redis, save_history, load_history,
@@ -153,3 +153,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
