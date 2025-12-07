@@ -127,6 +127,7 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
             save_state(chat_id, state, redis_client)
             messages.append({"role": "system", "content": f"(搜尋結果){news}"})
 
+
         # ✨ 不用 llm.py，直接呼叫 OpenAI
         out = await call_openai_direct(messages)
         out = enforce_format_simple(out)
@@ -222,4 +223,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
