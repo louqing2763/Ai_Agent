@@ -169,4 +169,3 @@ def get_persona(news="今天沒有新聞。"):
     """回傳格式化後的β persona prompt。"""
     return PERSONA_PROMPT.format(news=news)
 
-回到這種版本
