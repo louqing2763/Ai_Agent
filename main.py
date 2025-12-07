@@ -1,8 +1,8 @@
 # ==========================================================
-# main.py — 現在完全不用修改語氣，只讀 persona_config
+# main.py — 完全統一讀取 persona_config，無需再修改語氣
 # ==========================================================
 
-import os, io, asyncio, random, time
+import os, io, asyncio, random, time, contextlib
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder, MessageHandler, CommandHandler,
@@ -18,6 +18,7 @@ from core.redis_store import (
 from core.news import search_news
 from core.vision import analyze_image
 from core.tts import tts_jp
+
 
 
 # ----------------------------------------------------------
@@ -38,6 +39,18 @@ redis_client = init_redis(
 
 
 # ----------------------------------------------------------
+# Typing animation（完全修復）
+# ----------------------------------------------------------
+
+async def send_typing(chat_id):
+    try:
+        await app.bot.send_chat_action(chat_id, "typing")
+    except:
+        pass
+
+
+
+# ----------------------------------------------------------
 # 分割答案
 # ----------------------------------------------------------
 
@@ -46,6 +59,7 @@ def split_reply(text):
         return text, text
     cn, jp = text.split("|||", 1)
     return cn.strip(), jp.strip()
+
 
 
 # ----------------------------------------------------------
@@ -60,14 +74,11 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
     state["last_user_timestamp"] = time.time()
     save_state(chat_id, state, redis_client)
 
-    # ------------------------------------------------------
-    # 啟動 typing 動畫（持續輸入中）
-    # ------------------------------------------------------
-    typing_task = asyncio.create_task(send_typing(context, chat_id))
+    # typing 動畫
+    typing_task = asyncio.create_task(send_typing(chat_id))
 
     try:
-        # ======== 處理圖片/語音/搜尋 ========
-
+        # 圖片
         if image_b64:
             out = await analyze_image(image_b64)
             out = enforce_format(out)
@@ -75,9 +86,11 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
             save_history(chat_id, history, redis_client)
             return out
 
+        # 語音（未啟用）
         if voice_data:
             user_text = "(語音內容已收到，但語音辨識未啟用)"
 
+        # 判斷是否搜尋
         needs_search = any(
             k in (user_text or "")
             for k in ["是什麼", "介紹", "查", "是誰"]
@@ -94,16 +107,16 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
             save_state(chat_id, state, redis_client)
             messages.append({"role": "system", "content": f"(搜尋結果){news}"})
 
-        # ======== 主要回答 ========
+        # 主回覆
         out = await call_openai(messages)
         out = enforce_format(out)
 
     finally:
-        # 停止 typing 動畫
         typing_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await typing_task
 
+    # 儲存回覆
     history.append({"role": "assistant", "content": out})
     save_history(chat_id, history, redis_client)
 
@@ -129,6 +142,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(cn)
 
 
+
 # ----------------------------------------------------------
 # 推播
 # ----------------------------------------------------------
@@ -145,7 +159,8 @@ async def intelligent_push(context):
 
     content = random.choice(PUSH_LINES["default"])
 
-    persona = get_persona(state.get("news_cache", ""))
+    persona = get_persona(news=state.get("news_cache", ""))
+
     messages = [{"role": "system", "content": persona}] + history
     messages.append({"role": "assistant", "content": content})
 
@@ -158,6 +173,7 @@ async def intelligent_push(context):
     save_history(chat_id, history, redis_client)
 
 
+
 # ----------------------------------------------------------
 # reset
 # ----------------------------------------------------------
@@ -168,6 +184,7 @@ async def cmd_reset(update: Update, context):
     save_state(ADMIN_ID, {}, redis_client)
 
     await update.message.reply_text("(深呼吸)…好了，我重新開始了。")
+
 
 
 # ----------------------------------------------------------
@@ -190,4 +207,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
