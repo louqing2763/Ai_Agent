@@ -72,9 +72,7 @@ async def call_openai_direct(messages):
         messages=messages,
         temperature=0.9,
     )
-    return response.choices[0].message["content"]
-
-
+    return response.choices[0].message.content
 # ----------------------------------------------------------
 # 格式強制（過去 enforce_format 的簡化版）
 # ----------------------------------------------------------
@@ -224,3 +222,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
