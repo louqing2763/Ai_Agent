@@ -58,7 +58,6 @@ def soften_tone(text: str):
     """
 
     replacements = {
-        "你": "你呀",
         "我覺得": "我在想啊…",
         "其實": "其實呢…",
         "不是": "不是啦…",
