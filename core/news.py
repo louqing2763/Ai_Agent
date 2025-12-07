@@ -1,32 +1,31 @@
 # ==========================================================
-# news.py — 無 llm、無 aiohttp、最穩定新聞 API
+# news.py — async 版本，與 main 完全相容
 # ==========================================================
 
 import os
-import requests
+import aiohttp
 
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 
-def search_news():
-    """以最安全方式取得前三則新聞摘要"""
-    if not NEWS_API_KEY:
-        return "目前沒有新聞來源設定喔。"
-
+async def search_news():
     try:
-        url = (
-            "https://newsapi.org/v2/top-headlines?"
-            "country=tw&"
-            f"apiKey={NEWS_API_KEY}"
-        )
+        if not NEWS_API_KEY:
+            return "目前沒有設定新聞 API KEY。"
 
-        resp = requests.get(url, timeout=5)
-        data = resp.json()
+        url = f"https://newsapi.org/v2/top-headlines?country=tw&apiKey={NEWS_API_KEY}"
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                data = await resp.json()
 
         articles = data.get("articles", [])
         if not articles:
             return "今天沒有什麼特別的新聞喔。"
 
-        summary = "\n".join([f"- {a.get('title','(無標題)')}" for a in articles[:3]])
+        # 取前 3 則
+        top = articles[:3]
+        summary = "\n".join([f"- {a.get('title', '')}" for a in top])
+
         return f"今日新聞更新：\n{summary}"
 
     except Exception:
