@@ -52,7 +52,7 @@ def split_reply(text):
 # 回覆生成流程
 # ----------------------------------------------------------
 
-async def generate_reply(chat_id, user_text=None):
+async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=None, context=None):
 
     history = load_history(chat_id, redis_client)
     state = load_state(chat_id, redis_client)
@@ -60,18 +60,55 @@ async def generate_reply(chat_id, user_text=None):
     state["last_user_timestamp"] = time.time()
     save_state(chat_id, state, redis_client)
 
-    persona = get_persona(state.get("news_cache", ""))
+    # ------------------------------------------------------
+    # 啟動 typing 動畫（持續輸入中）
+    # ------------------------------------------------------
+    typing_task = asyncio.create_task(send_typing(context, chat_id))
 
-    messages = [{"role": "system", "content": persona}] + history
-    messages.append({"role": "user", "content": user_text})
+    try:
+        # ======== 處理圖片/語音/搜尋 ========
 
-    out = await call_openai(messages)
-    out = enforce_format(out)
+        if image_b64:
+            out = await analyze_image(image_b64)
+            out = enforce_format(out)
+            history.append({"role": "assistant", "content": out})
+            save_history(chat_id, history, redis_client)
+            return out
+
+        if voice_data:
+            user_text = "(語音內容已收到，但語音辨識未啟用)"
+
+        needs_search = any(
+            k in (user_text or "")
+            for k in ["是什麼", "介紹", "查", "是誰"]
+        )
+
+        persona = get_persona(news=state.get("news_cache", ""))
+
+        messages = [{"role": "system", "content": persona}] + history
+        messages.append({"role": "user", "content": user_text})
+
+        if needs_search:
+            news = await search_news()
+            state["news_cache"] = news
+            save_state(chat_id, state, redis_client)
+            messages.append({"role": "system", "content": f"(搜尋結果){news}"})
+
+        # ======== 主要回答 ========
+        out = await call_openai(messages)
+        out = enforce_format(out)
+
+    finally:
+        # 停止 typing 動畫
+        typing_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await typing_task
 
     history.append({"role": "assistant", "content": out})
     save_history(chat_id, history, redis_client)
 
     return out
+
 
 
 # ----------------------------------------------------------
@@ -153,3 +190,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
