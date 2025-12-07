@@ -173,6 +173,9 @@ async def intelligent_push(context):
     history = load_history(chat_id, redis_client)
 
     now = time.time()
+    if is_night():
+        return
+    if now - state.get("last_user_timestamp", 0) > 3600:
     if now - state.get("last_user_timestamp", 0) < 180:
         return
 
@@ -223,5 +226,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
