@@ -1,37 +1,32 @@
 # ==========================================================
-#  news.py — V7.5 (Intimate Whisper-Style News for Congyin)
+# news.py — 不需要 llm.py，純搜尋新聞摘要
 # ==========================================================
 
-from core.llm import call_openai
+import os
+import aiohttp
+import asyncio
 
+NEWS_API_KEY = os.getenv("NEWS_API_KEY")
+
+# 你也可以留空，反正 main 會處理沒有新聞的情況
 async def search_news():
-    """
-    以「聰音的視角」生成她覺得可愛、好玩、或
-    想要第一時間和落卿分享的小消息。
+    try:
+        url = f"https://newsapi.org/v2/top-headlines?country=tw&apiKey={NEWS_API_KEY}"
 
-    語氣規範：
-    - 親密、輕聲、靠近
-    - 像分享悄悄話，而不是報導新聞
-    - 聚焦在科技、AI、生活的奇妙小發現
-    """
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                data = await resp.json()
 
-    system_prompt = (
-        "妳是佐奈聰音。不是在播新聞，而是在『靠近落卿耳邊』"
-        "用輕輕的小聲音分享妳覺得可愛、有趣、或想告訴他的消息。"
+        articles = data.get("articles", [])
+        if not articles:
+            return "今天沒有什麼特別的新聞喔。"
 
-        "新聞不需要精準，但要合理、生活化。"
-        "語氣要親密、像悄悄話。"
+        # 取前三則
+        top = articles[:3]
+        summary = "\n".join([f"- {a['title']}" for a in top])
 
-        "格式示例："
-        "（小小靠近）欸…落卿，我剛看到一個有趣的事情…"
-        "（指尖捏著衣角）我覺得這個訊息有點可愛，就想第一個跟你說…"
+        return f"今日新聞更新：\n{summary}"
 
-        "請生成 1 則親密系的『小消息』，不超過 3 句。"
-    )
+    except Exception as e:
+        return "目前無法取得最新新聞。"
 
-    messages = [
-        {"role": "system", "content": system_prompt}
-    ]
-
-    result = await call_openai(messages)
-    return result
