@@ -8,7 +8,7 @@ import requests
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 
 def search_news():
-    """以最安全方式取得台灣前三則新聞摘要"""
+    """以最安全方式取得前三則新聞摘要"""
     if not NEWS_API_KEY:
         return "目前沒有新聞來源設定喔。"
 
