@@ -4,3 +4,5 @@ duckduckgo-search>=4.3.0
 requests>=2.31.0
 pytz
 redis>=5.0.0
+aiohttp
+
