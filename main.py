@@ -2,7 +2,7 @@
 # main.py — 不需要 llm.py，直接呼叫 OpenAI API
 # ==========================================================
 
-import os, io, asyncio, random, time, contextlib
+import os, io, asyncio, random, time, contextlib, datetime, pytz
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder, MessageHandler, CommandHandler,
@@ -165,6 +165,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ----------------------------------------------------------
 # 推播
 # ----------------------------------------------------------
+TW_TZ = pytz.timezone("Asia/Taipei")
+
+def is_night():
+    now = datetime.datetime.now(TW_TZ)
+    hour = now.hour
+    return hour >= 23 or hour < 8
+
 
 async def intelligent_push(context):
 
@@ -173,25 +180,33 @@ async def intelligent_push(context):
     history = load_history(chat_id, redis_client)
 
     now = time.time()
+    last_ts = state.get("last_user_timestamp", 0)
+
     if is_night():
         return
-    if now - state.get("last_user_timestamp", 0) > 3600:
-    if now - state.get("last_user_timestamp", 0) < 180:
+
+    if now - last_ts > 3600:
         return
 
+    if now - last_ts < 180:
+        return
+        
     content = random.choice(PUSH_LINES["default"])
-
     persona = get_persona(news=state.get("news_cache", ""))
+
     messages = [{"role": "system", "content": persona}] + history
     messages.append({"role": "assistant", "content": content})
 
+    # 直接呼叫 OpenAI（不使用 llm.py）
     out = await call_openai_direct(messages)
     cn, jp = split_reply(out)
 
     await context.bot.send_message(chat_id, cn)
 
+    # 存回歷史
     history.append({"role": "assistant", "content": out})
     save_history(chat_id, history, redis_client)
+
 
 
 # ----------------------------------------------------------
@@ -226,6 +241,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
