@@ -29,7 +29,7 @@ async def analyze_image(b64):
         )
 
         # 回傳純文字輸出
-        return res.output_text
+        return res.choices[0].message.content
 
     except Exception as e:
         return "我看不太清楚這張圖片呢。"
