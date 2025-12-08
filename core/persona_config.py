@@ -134,5 +134,15 @@ PUSH_LINES = {
     ]
 }
 
-def get_persona(news="今天沒有新聞。"):
-    return PERSONA_PROMPT
+def get_persona(news="今天沒有新聞。", minutes_since_last=None, timer_trigger=False):
+    persona = PERSONA_PROMPT
+
+    # 加入「距離上次對話多久」
+    if minutes_since_last is not None:
+        persona += f"\n（系統資訊：落卿已經有 {minutes_since_last} 分鐘沒有說話。）"
+
+    # 加入「計時提醒」
+    if timer_trigger:
+        persona += "\n（系統提醒：計時器時間到。）"
+
+    return persona
