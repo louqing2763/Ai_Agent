@@ -1,5 +1,5 @@
 # ==========================================================
-# main.py (with anti-repetition system)
+# main.py (DeepSeek + Anti-Repetition + Timer + Idle Detection)
 # ==========================================================
 
 import os, io, asyncio, random, time, contextlib, requests, difflib
@@ -38,9 +38,8 @@ redis_client = init_redis(
 )
 
 
-
 # ==========================================================
-# ✨ Anti-Repetition Modules（新增）
+# ✨ Anti-Repetition Modules（避免重複回答）
 # ==========================================================
 
 def is_too_similar(text1, text2, threshold=0.92):
@@ -120,16 +119,29 @@ def enforce_format_simple(text):
 
 
 
-# ----------------------------------------------------------
-# 回覆生成流程（加入防同質化）
-# ----------------------------------------------------------
+# ==========================================================
+# ✨ 回覆生成流程（加入 anti-repetition + timer + idle detector）
+# ==========================================================
 
 async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=None, context=None):
 
     history = load_history(chat_id, redis_client)
     state = load_state(chat_id, redis_client)
 
-    state["last_user_timestamp"] = time.time()
+    now = time.time()
+
+    # 計算離線多久 -------------------------------------------------------
+    last = state.get("last_user_timestamp", now)
+    minutes_since_last = int((now - last) / 60)
+
+    # 覆寫時間戳
+    state["last_user_timestamp"] = now
+
+    # 計時器到期判定 ------------------------------------------------------
+    timer_trigger = False
+    if "timer_end" in state and now >= state["timer_end"]:
+        timer_trigger = True
+        del state["timer_end"]
     save_state(chat_id, state, redis_client)
 
     typing_task = asyncio.create_task(send_typing(chat_id))
@@ -147,13 +159,18 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
         if voice_data:
             user_text = "(語音內容接收，但語音辨識未啟用)"
 
-        # 判斷是否需搜尋
+        # 是否需要搜尋
         needs_search = any(
             k in (user_text or "")
             for k in ["是什麼", "介紹", "查", "是誰"]
         )
 
-        persona = get_persona(news=state.get("news_cache", ""))
+        # persona 注入 minutes_since_last / timer_trigger
+        persona = get_persona(
+            news=state.get("news_cache", ""),
+            minutes_since_last=minutes_since_last,
+            timer_trigger=timer_trigger
+        )
 
         messages = [{"role": "system", "content": persona}] + history
         messages.append({"role": "user", "content": user_text})
@@ -169,9 +186,8 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
         out = enforce_format_simple(out)
 
         # ======================================================
-        # ✨ 防同質化：若與上一句過於相似 → 重生一次
+        # 防同質化：若與上一句過於相似 → 重生一次
         # ======================================================
-
         last_reply = get_last_assistant_reply(history)
         if is_too_similar(out, last_reply):
             out = await call_deepseek(messages)
@@ -208,9 +224,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
-# ----------------------------------------------------------
+# ==========================================================
 # 推播（LLM 生成，不使用固定句）
-# ----------------------------------------------------------
+# ==========================================================
 
 async def intelligent_push(context):
 
@@ -221,50 +237,42 @@ async def intelligent_push(context):
     now = time.time()
     last_talk = state.get("last_user_timestamp", 0)
 
-    # 1) 夜間靜音：23:00 ~ 08:00 不推播
+    # 夜間靜音：23:00 ~ 08:00
     lt = time.localtime(now)
     hour = lt.tm_hour
     if hour >= 23 or hour < 8:
         return
 
-    # 2) 如果 3 分鐘內有互動 → 不推播
+    # 3 分鐘內有對話 → 不推播
     if now - last_talk < 180:
         return
 
-    # 3) 如果超過 2 小時未讀 → 不推播（避免刷存在感過度）
-    if now - last_talk > 2 * 3600:
+    # 超過 2 小時未讀 → 不推播（避免騷擾）
+    if now - last_talk > 7200:
         return
 
-    # ------------------------------------------------------
-    # 由 LLM 生成推播內容
-    # ------------------------------------------------------
-
+    # 使用 LLM 產生推播
     persona = get_persona(news=state.get("news_cache", ""))
 
-    # 讓 DeepSeek “只”產生一句推播的指令提示
-    push_instruction = (
-        "請生成**一行推播訊息**，必須符合 persona 中的『推播限制規則』："
-        "不可多段、不可故事化、不可超過 35 字，只能一句簡短、"
-        "調皮、主動、活潑的少女語氣。"
+    instruction = (
+        "請生成『一行推播訊息』，需符合 persona 規範："
+        "不可多段落、不可故事化、不可超過 35 字、"
+        "語氣需調皮、有活力、少女式、主動靠近。"
     )
 
     messages = [
         {"role": "system", "content": persona},
-        {"role": "user", "content": push_instruction}
+        {"role": "user", "content": instruction}
     ]
 
     out = await call_deepseek(messages)
     out = enforce_format_simple(out)
-
     cn, jp = split_reply(out)
 
-    # 傳送推播
     await context.bot.send_message(chat_id, cn)
 
-    # 存入歷史
     history.append({"role": "assistant", "content": out})
     save_history(chat_id, history, redis_client)
-
 
 
 
@@ -293,10 +301,9 @@ def main():
 
     app.job_queue.run_repeating(intelligent_push, interval=1800, first=20)
 
-    print("🚀 Congyin V8.6 — DeepSeek Version + Anti-Repetition Running")
+    print("🚀 Congyin V8.6-T — DeepSeek + Anti-Repetition + Timer Running")
     app.run_polling()
 
 
 if __name__ == "__main__":
     main()
-
