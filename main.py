@@ -178,7 +178,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ----------------------------------------------------------
-# push
+# 推播（加上「夜間靜音 + 長時間未讀自動收斂」）
 # ----------------------------------------------------------
 
 async def intelligent_push(context):
@@ -188,18 +188,31 @@ async def intelligent_push(context):
     history = load_history(chat_id, redis_client)
 
     now = time.time()
-    if now - state.get("last_user_timestamp", 0) < 180:
+    last_talk = state.get("last_user_timestamp", 0)
+
+    # 1) 夜間靜音：23:00 ~ 08:00 不推播
+    lt = time.localtime(now)   # 注意：這是伺服器所在時區
+    hour = lt.tm_hour
+    if hour >= 23 or hour < 8:
         return
 
-    # 選一行推播
+    # 2) 最近 3 分鐘有互動 → 不推播（避免跟你搶話）
+    if now - last_talk < 180:
+        return
+
+    if now - last_talk > 2 * 3600:
+        return
+
+    # 4) 正常推播內容（使用 persona + 歷史對話）
     content = random.choice(PUSH_LINES["default"])
 
     persona = get_persona(news=state.get("news_cache", ""))
-
     messages = [{"role": "system", "content": persona}] + history
     messages.append({"role": "assistant", "content": content})
 
-    out = await call_deepseek(messages)
+    out = await call_openai_direct(messages)
+    out = enforce_format_simple(out)
+
     cn, jp = split_reply(out)
 
     await context.bot.send_message(chat_id, cn)
@@ -240,3 +253,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
