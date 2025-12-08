@@ -1,8 +1,8 @@
 # ==========================================================
-# main.py
+# main.py (with anti-repetition system)
 # ==========================================================
 
-import os, io, asyncio, random, time, contextlib, requests
+import os, io, asyncio, random, time, contextlib, requests, difflib
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder, MessageHandler, CommandHandler,
@@ -38,6 +38,28 @@ redis_client = init_redis(
 )
 
 
+
+# ==========================================================
+# ✨ Anti-Repetition Modules（新增）
+# ==========================================================
+
+def is_too_similar(text1, text2, threshold=0.92):
+    """判斷兩段回覆是否過於雷同"""
+    if not text1 or not text2:
+        return False
+    ratio = difflib.SequenceMatcher(None, text1, text2).ratio()
+    return ratio > threshold
+
+
+def get_last_assistant_reply(history):
+    """取得上一句 assistant 回覆"""
+    for msg in reversed(history):
+        if msg["role"] == "assistant":
+            return msg["content"]
+    return None
+
+
+
 # ----------------------------------------------------------
 # Typing animation
 # ----------------------------------------------------------
@@ -47,6 +69,7 @@ async def send_typing(chat_id):
         await app.bot.send_chat_action(chat_id, "typing")
     except:
         pass
+
 
 
 # ----------------------------------------------------------
@@ -60,14 +83,12 @@ def split_reply(text):
     return cn.strip(), jp.strip()
 
 
+
 # ----------------------------------------------------------
 # DeepSeek Wrapper（主大腦）
 # ----------------------------------------------------------
 
 async def call_deepseek(messages):
-    """
-    直接呼叫 DeepSeek Chat API。
-    """
 
     url = "https://api.deepseek.com/v1/chat/completions"
     headers = {
@@ -83,10 +104,9 @@ async def call_deepseek(messages):
     res = await asyncio.to_thread(
         requests.post, url, headers=headers, json=payload
     )
-
     data = res.json()
-
     return data["choices"][0]["message"]["content"]
+
 
 
 # ----------------------------------------------------------
@@ -99,8 +119,9 @@ def enforce_format_simple(text):
     return text.strip()
 
 
+
 # ----------------------------------------------------------
-# 回覆生成流程
+# 回覆生成流程（加入防同質化）
 # ----------------------------------------------------------
 
 async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=None, context=None):
@@ -143,9 +164,18 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
             save_state(chat_id, state, redis_client)
             messages.append({"role": "system", "content": f"(搜尋結果){news}"})
 
-        # DeepSeek 主回覆
+        # 主回覆
         out = await call_deepseek(messages)
         out = enforce_format_simple(out)
+
+        # ======================================================
+        # ✨ 防同質化：若與上一句過於相似 → 重生一次
+        # ======================================================
+
+        last_reply = get_last_assistant_reply(history)
+        if is_too_similar(out, last_reply):
+            out = await call_deepseek(messages)
+            out = enforce_format_simple(out)
 
     finally:
         typing_task.cancel()
@@ -157,6 +187,7 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
     save_history(chat_id, history, redis_client)
 
     return out
+
 
 
 # ----------------------------------------------------------
@@ -173,12 +204,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     out = await generate_reply(chat_id, user_text=text)
     cn, jp = split_reply(out)
-
     await update.message.reply_text(cn)
 
 
+
 # ----------------------------------------------------------
-# 推播（加上「夜間靜音 + 長時間未讀自動收斂」）
+# 推播（已保留你原先的邏輯）
 # ----------------------------------------------------------
 
 async def intelligent_push(context):
@@ -190,35 +221,37 @@ async def intelligent_push(context):
     now = time.time()
     last_talk = state.get("last_user_timestamp", 0)
 
-    # 1) 夜間靜音：23:00 ~ 08:00 不推播
-    lt = time.localtime(now)   # 注意：這是伺服器所在時區
-    hour = lt.tm_hour
+    hour = time.localtime(now).tm_hour
     if hour >= 23 or hour < 8:
         return
 
-    # 2) 最近 3 分鐘有互動 → 不推播（避免跟你搶話）
     if now - last_talk < 180:
         return
 
     if now - last_talk > 2 * 3600:
         return
 
-    # 4) 正常推播內容（使用 persona + 歷史對話）
     content = random.choice(PUSH_LINES["default"])
 
     persona = get_persona(news=state.get("news_cache", ""))
+
     messages = [{"role": "system", "content": persona}] + history
     messages.append({"role": "assistant", "content": content})
 
-    out = await call_openai_direct(messages)
+    out = await call_deepseek(messages)
     out = enforce_format_simple(out)
 
-    cn, jp = split_reply(out)
+    # 推播也避免與上一句重複
+    last_reply = get_last_assistant_reply(history)
+    if is_too_similar(out, last_reply):
+        out = await call_deepseek(messages)
+        out = enforce_format_simple(out)
 
-    await context.bot.send_message(chat_id, cn)
+    await context.bot.send_message(chat_id, out)
 
     history.append({"role": "assistant", "content": out})
     save_history(chat_id, history, redis_client)
+
 
 
 # ----------------------------------------------------------
@@ -226,11 +259,10 @@ async def intelligent_push(context):
 # ----------------------------------------------------------
 
 async def cmd_reset(update: Update, context):
-
     save_history(ADMIN_ID, [], redis_client)
     save_state(ADMIN_ID, {}, redis_client)
-
     await update.message.reply_text("（系統已重置）")
+
 
 
 # ----------------------------------------------------------
@@ -247,10 +279,9 @@ def main():
 
     app.job_queue.run_repeating(intelligent_push, interval=1800, first=20)
 
-    print("🚀 Congyin V8.5 — DeepSeek Version Running")
+    print("🚀 Congyin V8.6 — DeepSeek Version + Anti-Repetition Running")
     app.run_polling()
 
 
 if __name__ == "__main__":
     main()
-
