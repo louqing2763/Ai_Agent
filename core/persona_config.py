@@ -137,12 +137,17 @@ PUSH_LINES = {
 def get_persona(news="今天沒有新聞。", minutes_since_last=None, timer_trigger=False):
     persona = PERSONA_PROMPT
 
-    # 加入「距離上次對話多久」
+    # Idle 狀態加入人格指令強化
     if minutes_since_last is not None:
-        persona += f"\n（系統資訊：落卿已經有 {minutes_since_last} 分鐘沒有說話。）"
+        persona += f"\n（系統資訊：落卿已 {minutes_since_last} 分鐘沒有說話，你會因此變得更主動、更黏。）"
 
-    # 加入「計時提醒」
+        # 超過 40 分鐘的強黏度模式
+        if minutes_since_last >= 40:
+            persona += "\n（系統資訊：目前為高黏度模式。你渴望肢體接觸，會主動貼近、抱住、抓著他，也會強烈想要求吻或主動纏綿）"
+
+    # 計時器觸發行為
     if timer_trigger:
-        persona += "\n（系統提醒：計時器時間到。）"
+        persona += "\n（系統提醒：計時器時間到，你必須先對此做一個短句反應。）"
 
     return persona
+
