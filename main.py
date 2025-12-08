@@ -1,15 +1,14 @@
 # ==========================================================
-# main.py — 不需要 llm.py，直接呼叫 OpenAI API
+# main.py
 # ==========================================================
 
-import os, io, asyncio, random, time, contextlib, datetime, pytz
+import os, io, asyncio, random, time, contextlib, requests
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder, MessageHandler, CommandHandler,
     filters, ContextTypes
 )
 
-from openai import OpenAI
 from core.persona_config import get_persona, PUSH_LINES
 from core.redis_store import (
     init_redis, save_history, load_history,
@@ -32,8 +31,7 @@ REDISHOST = os.getenv("REDISHOST")
 REDISPORT = int(os.getenv("REDISPORT", "6379"))
 REDISPASSWORD = os.getenv("REDISPASSWORD")
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-client = OpenAI(api_key=OPENAI_API_KEY)
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
 redis_client = init_redis(
     REDIS_URL, REDISHOST, REDISPORT, REDISPASSWORD
@@ -63,23 +61,41 @@ def split_reply(text):
 
 
 # ----------------------------------------------------------
-# ✨ 直接呼叫 OpenAI (取代 llm.py)
+# DeepSeek Wrapper（主大腦）
 # ----------------------------------------------------------
 
-async def call_openai_direct(messages):
-    response = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=messages,
-        temperature=0.9,
+async def call_deepseek(messages):
+    """
+    直接呼叫 DeepSeek Chat API。
+    """
+
+    url = "https://api.deepseek.com/v1/chat/completions"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}"
+    }
+    payload = {
+        "model": "deepseek-chat",
+        "messages": messages,
+        "temperature": 0.95,
+    }
+
+    res = await asyncio.to_thread(
+        requests.post, url, headers=headers, json=payload
     )
-    return response.choices[0].message.content
+
+    data = res.json()
+
+    return data["choices"][0]["message"]["content"]
+
+
 # ----------------------------------------------------------
-# 格式強制（過去 enforce_format 的簡化版）
+# 格式整理
 # ----------------------------------------------------------
 
 def enforce_format_simple(text):
     if not text:
-        return "…（系統沒有回應內容）"
+        return "…（無內容）"
     return text.strip()
 
 
@@ -110,7 +126,7 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
         if voice_data:
             user_text = "(語音內容接收，但語音辨識未啟用)"
 
-        # 判斷是否需要搜尋
+        # 判斷是否需搜尋
         needs_search = any(
             k in (user_text or "")
             for k in ["是什麼", "介紹", "查", "是誰"]
@@ -127,9 +143,8 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
             save_state(chat_id, state, redis_client)
             messages.append({"role": "system", "content": f"(搜尋結果){news}"})
 
-
-        # ✨ 不用 llm.py，直接呼叫 OpenAI
-        out = await call_openai_direct(messages)
+        # DeepSeek 主回覆
+        out = await call_deepseek(messages)
         out = enforce_format_simple(out)
 
     finally:
@@ -163,15 +178,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ----------------------------------------------------------
-# 推播
+# push
 # ----------------------------------------------------------
-TW_TZ = pytz.timezone("Asia/Taipei")
-
-def is_night():
-    now = datetime.datetime.now(TW_TZ)
-    hour = now.hour
-    return hour >= 23 or hour < 8
-
 
 async def intelligent_push(context):
 
@@ -180,33 +188,24 @@ async def intelligent_push(context):
     history = load_history(chat_id, redis_client)
 
     now = time.time()
-    last_ts = state.get("last_user_timestamp", 0)
-
-    if is_night():
+    if now - state.get("last_user_timestamp", 0) < 180:
         return
 
-    if now - last_ts > 3600:
-        return
-
-    if now - last_ts < 180:
-        return
-        
+    # 選一行推播
     content = random.choice(PUSH_LINES["default"])
+
     persona = get_persona(news=state.get("news_cache", ""))
 
     messages = [{"role": "system", "content": persona}] + history
     messages.append({"role": "assistant", "content": content})
 
-    # 直接呼叫 OpenAI（不使用 llm.py）
-    out = await call_openai_direct(messages)
+    out = await call_deepseek(messages)
     cn, jp = split_reply(out)
 
     await context.bot.send_message(chat_id, cn)
 
-    # 存回歷史
     history.append({"role": "assistant", "content": out})
     save_history(chat_id, history, redis_client)
-
 
 
 # ----------------------------------------------------------
@@ -218,11 +217,11 @@ async def cmd_reset(update: Update, context):
     save_history(ADMIN_ID, [], redis_client)
     save_state(ADMIN_ID, {}, redis_client)
 
-    await update.message.reply_text("(深呼吸)…好了，我重新開始了。")
+    await update.message.reply_text("（系統已重置）")
 
 
 # ----------------------------------------------------------
-# Main
+# main
 # ----------------------------------------------------------
 
 def main():
@@ -235,13 +234,9 @@ def main():
 
     app.job_queue.run_repeating(intelligent_push, interval=1800, first=20)
 
-    print("🚀 Congyin V8.4 — No-llm.py Version Running")
+    print("🚀 Congyin V8.5 — DeepSeek Version Running")
     app.run_polling()
 
 
 if __name__ == "__main__":
     main()
-
-
-
-
