@@ -209,7 +209,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ----------------------------------------------------------
-# 推播（已保留你原先的邏輯）
+# 推播（LLM 生成，不使用固定句）
 # ----------------------------------------------------------
 
 async def intelligent_push(context):
@@ -221,36 +221,50 @@ async def intelligent_push(context):
     now = time.time()
     last_talk = state.get("last_user_timestamp", 0)
 
-    hour = time.localtime(now).tm_hour
+    # 1) 夜間靜音：23:00 ~ 08:00 不推播
+    lt = time.localtime(now)
+    hour = lt.tm_hour
     if hour >= 23 or hour < 8:
         return
 
+    # 2) 如果 3 分鐘內有互動 → 不推播
     if now - last_talk < 180:
         return
 
+    # 3) 如果超過 2 小時未讀 → 不推播（避免刷存在感過度）
     if now - last_talk > 2 * 3600:
         return
 
-    content = random.choice(PUSH_LINES["default"])
+    # ------------------------------------------------------
+    # 由 LLM 生成推播內容
+    # ------------------------------------------------------
 
     persona = get_persona(news=state.get("news_cache", ""))
 
-    messages = [{"role": "system", "content": persona}] + history
-    messages.append({"role": "assistant", "content": content})
+    # 讓 DeepSeek “只”產生一句推播的指令提示
+    push_instruction = (
+        "請生成**一行推播訊息**，必須符合 persona 中的『推播限制規則』："
+        "不可多段、不可故事化、不可超過 35 字，只能一句簡短、"
+        "調皮、主動、活潑的少女語氣。"
+    )
+
+    messages = [
+        {"role": "system", "content": persona},
+        {"role": "user", "content": push_instruction}
+    ]
 
     out = await call_deepseek(messages)
     out = enforce_format_simple(out)
 
-    # 推播也避免與上一句重複
-    last_reply = get_last_assistant_reply(history)
-    if is_too_similar(out, last_reply):
-        out = await call_deepseek(messages)
-        out = enforce_format_simple(out)
+    cn, jp = split_reply(out)
 
-    await context.bot.send_message(chat_id, out)
+    # 傳送推播
+    await context.bot.send_message(chat_id, cn)
 
+    # 存入歷史
     history.append({"role": "assistant", "content": out})
     save_history(chat_id, history, redis_client)
+
 
 
 
@@ -285,3 +299,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
