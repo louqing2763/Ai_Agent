@@ -85,6 +85,12 @@ def split_reply(text):
 # ----------------------------------------------------------
 
 async def call_deepseek(messages):
+    """
+    呼叫 DeepSeek API，但加入強韌錯誤處理：
+    - API 回傳非 JSON → 不 crash
+    - 連線失敗 → 給 fallback 訊息
+    """
+
     url = "https://api.deepseek.com/v1/chat/completions"
     headers = {
         "Content-Type": "application/json",
@@ -96,12 +102,28 @@ async def call_deepseek(messages):
         "temperature": 0.95,
     }
 
-    res = await asyncio.to_thread(
-        requests.post, url, headers=headers, json=payload
-    )
-    data = res.json()
-    return data["choices"][0]["message"]["content"]
+    try:
+        res = await asyncio.to_thread(
+            requests.post, url, headers=headers, json=payload, timeout=20
+        )
+    except Exception as e:
+        return f"(DeepSeek 連線失敗: {e})"
 
+    # 如果 status code 錯誤 → 回傳 API 錯誤內容
+    if res.status_code != 200:
+        return f"(DeepSeek API 錯誤 {res.status_code}) 回應: {res.text[:200]}"
+
+    # 嘗試解析 JSON
+    try:
+        data = res.json()
+    except Exception:
+        return f"(DeepSeek 回傳非 JSON) 回應: {res.text[:200]}"
+
+    # 正常輸出
+    try:
+        return data["choices"][0]["message"]["content"]
+    except Exception:
+        return f"(DeepSeek 回傳結構異常) data: {data}"
 
 # ----------------------------------------------------------
 # 格式整理
@@ -300,3 +322,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
