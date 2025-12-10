@@ -3,6 +3,7 @@
 # ==========================================================
 
 import os, io, asyncio, random, time, contextlib, requests, difflib
+print(">>> main.py import success")
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder, MessageHandler, CommandHandler,
@@ -279,7 +280,7 @@ async def cmd_reset(update: Update, context):
 
 def main():
     global app
-
+    print(">>> main() running…")
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
     app.add_handler(MessageHandler(filters.TEXT, handle_text))
@@ -293,3 +294,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
