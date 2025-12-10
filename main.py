@@ -1,9 +1,8 @@
 # ==========================================================
-# main.py (DeepSeek + Anti-Repetition + Fixed crash)
+# main.py (DeepSeek + Anti-Repetition + Safe JobQueue)
 # ==========================================================
 
 import os, io, asyncio, random, time, contextlib, requests, difflib
-print(">>> main.py import success")
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder, MessageHandler, CommandHandler,
@@ -39,9 +38,8 @@ redis_client = init_redis(
 )
 
 
-
 # ==========================================================
-# Anti-Repetition Modules
+# ✨ Anti-Repetition Modules
 # ==========================================================
 
 def is_too_similar(text1, text2, threshold=0.92):
@@ -55,10 +53,9 @@ def is_too_similar(text1, text2, threshold=0.92):
 def get_last_assistant_reply(history):
     """取得上一句 assistant 回覆"""
     for msg in reversed(history):
-        if msg["role"] == "assistant":
-            return msg["content"]
+        if msg.get("role") == "assistant":
+            return msg.get("content")
     return None
-
 
 
 # ----------------------------------------------------------
@@ -68,9 +65,8 @@ def get_last_assistant_reply(history):
 async def send_typing(chat_id):
     try:
         await app.bot.send_chat_action(chat_id, "typing")
-    except:
+    except Exception:
         pass
-
 
 
 # ----------------------------------------------------------
@@ -84,13 +80,11 @@ def split_reply(text):
     return cn.strip(), jp.strip()
 
 
-
 # ----------------------------------------------------------
 # DeepSeek Wrapper（主大腦）
 # ----------------------------------------------------------
 
 async def call_deepseek(messages):
-
     url = "https://api.deepseek.com/v1/chat/completions"
     headers = {
         "Content-Type": "application/json",
@@ -109,7 +103,6 @@ async def call_deepseek(messages):
     return data["choices"][0]["message"]["content"]
 
 
-
 # ----------------------------------------------------------
 # 格式整理
 # ----------------------------------------------------------
@@ -120,23 +113,29 @@ def enforce_format_simple(text):
     return text.strip()
 
 
-
 # ----------------------------------------------------------
-# 回覆生成流程（加入防同質化）
+# 回覆生成流程（含防同質化 + minutes_since_last）
 # ----------------------------------------------------------
 
 async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=None, context=None):
-
     history = load_history(chat_id, redis_client)
     state = load_state(chat_id, redis_client)
 
+    # 計算距離上一次對話經過幾分鐘（在覆蓋前先算）
+    last_ts = state.get("last_user_timestamp")
+    if last_ts:
+        minutes_since_last = int((time.time() - last_ts) / 60)
+    else:
+        minutes_since_last = None
+
+    # 更新最後對話時間
     state["last_user_timestamp"] = time.time()
     save_state(chat_id, state, redis_client)
 
     typing_task = asyncio.create_task(send_typing(chat_id))
 
     try:
-        # 圖片
+        # 圖片模式
         if image_b64:
             out = await analyze_image(image_b64)
             out = enforce_format_simple(out)
@@ -144,17 +143,22 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
             save_history(chat_id, history, redis_client)
             return out
 
-        # 語音
+        # 語音模式（目前僅佔位）
         if voice_data:
             user_text = "(語音內容接收，但語音辨識未啟用)"
 
-        # 判斷是否需搜尋
+        # 判斷是否需要搜尋新聞
         needs_search = any(
             k in (user_text or "")
             for k in ["是什麼", "介紹", "查", "是誰"]
         )
 
-        persona = get_persona(news=state.get("news_cache", ""))
+        # persona 會帶入 minutes_since_last；timer_trigger 目前先固定 False
+        persona = get_persona(
+            news=state.get("news_cache", "今天沒有新聞。"),
+            minutes_since_last=minutes_since_last,
+            timer_trigger=False,
+        )
 
         messages = [{"role": "system", "content": persona}] + history
         messages.append({"role": "user", "content": user_text})
@@ -169,9 +173,7 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
         out = await call_deepseek(messages)
         out = enforce_format_simple(out)
 
-        # ======================================================
-        # 防同質化：若與上一句過於相似 → 重生一次
-        # ======================================================
+        # === 防同質化：如果跟上一句太像，就重生一次 ===
         last_reply = get_last_assistant_reply(history)
         if is_too_similar(out, last_reply):
             out = await call_deepseek(messages)
@@ -180,14 +182,13 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
     finally:
         typing_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
-            pass
+            await typing_task
 
-    # 儲存回覆
+    # 儲存新回覆
     history.append({"role": "assistant", "content": out})
     save_history(chat_id, history, redis_client)
 
     return out
-
 
 
 # ----------------------------------------------------------
@@ -195,7 +196,6 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
 # ----------------------------------------------------------
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     if update.effective_chat.id != ADMIN_ID:
         return
 
@@ -207,13 +207,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(cn)
 
 
-
 # ----------------------------------------------------------
 # 推播（LLM 生成，不使用固定句）
 # ----------------------------------------------------------
 
-async def intelligent_push(context):
-
+async def intelligent_push(context: ContextTypes.DEFAULT_TYPE):
     chat_id = ADMIN_ID
     state = load_state(chat_id, redis_client)
     history = load_history(chat_id, redis_client)
@@ -221,7 +219,7 @@ async def intelligent_push(context):
     now = time.time()
     last_talk = state.get("last_user_timestamp", 0)
 
-    # 夜間靜音：23:00 ~ 08:00
+    # 夜間靜音：23:00 ~ 08:00 不推播
     lt = time.localtime(now)
     hour = lt.tm_hour
     if hour >= 23 or hour < 8:
@@ -231,24 +229,28 @@ async def intelligent_push(context):
     if now - last_talk < 180:
         return
 
-    # 超過 2 小時未讀 → 不推播
+    # 超過 2 小時完全沒互動 → 也不再主動刷存在感
     if now - last_talk > 2 * 3600:
         return
 
-    # ------------------------------------------------------
-    # 由 DeepSeek 生成推播內容
-    # ------------------------------------------------------
+    # 距離上次對話的分鐘數（給 persona）
+    minutes_since_last = int((now - last_talk) / 60) if last_talk else None
 
-    persona = get_persona(news=state.get("news_cache", ""))
+    persona = get_persona(
+        news=state.get("news_cache", "今天沒有新聞。"),
+        minutes_since_last=minutes_since_last,
+        timer_trigger=False,
+    )
 
     push_instruction = (
-        "請生成一行推播訊息，遵守 persona 的『推播限制規則』："
-        "不可多段、不可故事化、不可超過 35 字，只能一句調皮、主動、活潑的少女語氣。"
+        "請生成**一行推播訊息**，必須符合 persona 中的『推播限制規則』："
+        "不可多段、不可故事化、不可超過 35 字，只能一句簡短、"
+        "調皮、主動、活潑的少女語氣。"
     )
 
     messages = [
         {"role": "system", "content": persona},
-        {"role": "user", "content": push_instruction}
+        {"role": "user", "content": push_instruction},
     ]
 
     out = await call_deepseek(messages)
@@ -262,16 +264,14 @@ async def intelligent_push(context):
     save_history(chat_id, history, redis_client)
 
 
-
 # ----------------------------------------------------------
 # reset
 # ----------------------------------------------------------
 
-async def cmd_reset(update: Update, context):
+async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_history(ADMIN_ID, [], redis_client)
     save_state(ADMIN_ID, {}, redis_client)
     await update.message.reply_text("（系統已重置）")
-
 
 
 # ----------------------------------------------------------
@@ -280,13 +280,19 @@ async def cmd_reset(update: Update, context):
 
 def main():
     global app
-    print(">>> main() running…")
+
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
     app.add_handler(MessageHandler(filters.TEXT, handle_text))
     app.add_handler(CommandHandler("reset", cmd_reset))
 
-    app.job_queue.run_repeating(intelligent_push, interval=1800, first=20)
+    # ⚠ JobQueue 在某些環境下可能是 None，先檢查再註冊
+    jq = getattr(app, "job_queue", None)
+    if jq is not None:
+        jq.run_repeating(intelligent_push, interval=1800, first=20)
+        print("✅ JobQueue 啟用：已註冊 intelligent_push")
+    else:
+        print("⚠ JobQueue 未啟用：不會進行推播（intelligent_push）")
 
     print("🚀 Congyin V8.6 — DeepSeek Version + Anti-Repetition Running")
     app.run_polling()
@@ -294,4 +300,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
