@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y \
 COPY . .
 
 RUN pip install --upgrade pip
+RUN pip install "python-telegram-bot[job-queue]>=21.0"
 RUN pip install -r requirements.txt
 
 CMD ["python", "main.py"]
