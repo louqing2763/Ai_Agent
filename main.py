@@ -99,7 +99,7 @@ async def call_deepseek(messages):
     payload = {
         "model": "deepseek-chat",
         "messages": messages,
-        "temperature": 0.95,
+        "temperature": 1.1,
     }
 
     try:
@@ -191,13 +191,6 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
             state["news_cache"] = news
             save_state(chat_id, state, redis_client)
             messages.append({"role": "system", "content": f"(搜尋結果){news}"})
-
-        # ========= DEBUG: 放在這裡最準確 =========
-        print("========= DEBUG: 發送給 AI 的完整封包 =========")
-        import json
-        print(json.dumps(messages, indent=2, ensure_ascii=False))
-        print("=============================================")
-        # ========================================
 
         # 主回覆
         out = await call_deepseek(messages)
@@ -330,6 +323,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
