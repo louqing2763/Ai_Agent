@@ -185,6 +185,14 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
         messages = [{"role": "system", "content": persona}] + history
         messages.append({"role": "user", "content": user_text})
 
+
+
+        print("========= DEBUG: 發送給 AI 的完整封包 =========")    
+        import json
+        print(json.dumps(messages, indent=2, ensure_ascii=False))
+        print("=============================================")
+
+        
         if needs_search:
             news = await search_news()
             state["news_cache"] = news
@@ -322,4 +330,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
