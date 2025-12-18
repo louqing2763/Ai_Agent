@@ -182,7 +182,7 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
             timer_trigger=False,
         )
 
-       messages = [{"role": "system", "content": persona}] + history
+        messages = [{"role": "system", "content": persona}] + history
         messages.append({"role": "user", "content": user_text})
 
         # 先處理搜尋（如果有的話）
@@ -330,6 +330,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
