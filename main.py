@@ -1,8 +1,8 @@
 # ==========================================================
-# main.py (DeepSeek + Anti-Repetition + Human-like Bubbles)
+# main.py (Final Version: DeepSeek + Human-like Bubbles + Code Style Actions)
 # ==========================================================
 
-import os, io, asyncio, random, time, contextlib, requests, difflib
+import os, io, asyncio, random, time, contextlib, requests, difflib, re
 from telegram import Update, constants
 from telegram.ext import (
     ApplicationBuilder, MessageHandler, CommandHandler,
@@ -18,7 +18,7 @@ from core.news import search_news
 from core.vision import analyze_image
 
 # ----------------------------------------------------------
-# ENV
+# ENV (環境變數設定)
 # ----------------------------------------------------------
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -31,17 +31,18 @@ REDISPASSWORD = os.getenv("REDISPASSWORD")
 
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
+# 初始化 Redis
 redis_client = init_redis(
     REDIS_URL, REDISHOST, REDISPORT, REDISPASSWORD
 )
 
 
 # ==========================================================
-# ✨ Anti-Repetition Modules
+# ✨ Helper Functions (輔助工具)
 # ==========================================================
 
 def is_too_similar(text1, text2, threshold=0.92):
-    """判斷兩段回覆是否過於雷同"""
+    """判斷兩段回覆是否過於雷同 (防複讀)"""
     if not text1 or not text2:
         return False
     ratio = difflib.SequenceMatcher(None, text1, text2).ratio()
@@ -56,14 +57,28 @@ def get_last_assistant_reply(history):
     return None
 
 
-# ----------------------------------------------------------
-# ✨ Human-like Bubble Sender (擬人化氣泡發送)
-# ----------------------------------------------------------
+def split_reply(text):
+    """分割中日文 (如果模型有輸出的話)"""
+    if "|||" not in text:
+        return text, text
+    cn, jp = text.split("|||", 1)
+    return cn.strip(), jp.strip()
+
+
+def enforce_format_simple(text):
+    if not text:
+        return "…"
+    return text.strip()
+
+
+# ==========================================================
+# ✨ Human-like Bubble Sender (擬人化氣泡發送引擎)
+# ==========================================================
 
 async def send_message_in_bubbles(bot, chat_id, full_text):
     """
-    將完整的 AI 回覆文字，依照換行符號切分，
-    模擬真人打字節奏，一句一句發送。
+    將 AI 回覆切分成多個氣泡，模擬真人打字節奏。
+    並將（括號內的動作）轉換為 Telegram 的 Code Style。
     """
     if not full_text:
         return
@@ -74,7 +89,6 @@ async def send_message_in_bubbles(bot, chat_id, full_text):
     for i, segment in enumerate(segments):
         # 2. 計算模擬延遲時間
         # 基礎延遲 0.3 秒 + 每個字 0.05 ~ 0.08 秒的浮動時間
-        # 這樣長句子會打比較久，短句子會秒回
         char_delay = 0.05 + random.uniform(0, 0.03)
         delay = 0.5 + (len(segment) * char_delay)
 
@@ -94,27 +108,28 @@ async def send_message_in_bubbles(bot, chat_id, full_text):
         # 4. 執行延遲
         await asyncio.sleep(delay)
 
-        # 5. 發送該段落
+        # 5. 樣式美化：將（動作）轉為 <code>樣式
+        # 使用 Regex 把全形括號內容包進 HTML code 標籤
+        # 效果：變成電腦終端機字體，很有 AI 系統感
+        if "（" in segment and "）" in segment:
+             formatted_text = re.sub(r'（(.*?)）', r'<code>（\1）</code>', segment)
+        else:
+             formatted_text = segment
+
+        # 6. 發送該段落 (必須啟用 HTML parse mode)
         try:
-            await bot.send_message(chat_id=chat_id, text=segment)
+            await bot.send_message(
+                chat_id=chat_id, 
+                text=formatted_text,
+                parse_mode=constants.ParseMode.HTML
+            )
         except Exception as e:
             print(f"Error sending segment: {e}")
 
 
-# ----------------------------------------------------------
-# 分割答案 (保留舊有邏輯)
-# ----------------------------------------------------------
-
-def split_reply(text):
-    if "|||" not in text:
-        return text, text
-    cn, jp = text.split("|||", 1)
-    return cn.strip(), jp.strip()
-
-
-# ----------------------------------------------------------
-# DeepSeek Wrapper（主大腦）
-# ----------------------------------------------------------
+# ==========================================================
+# 🧠 DeepSeek Wrapper (大腦)
+# ==========================================================
 
 async def call_deepseek(messages):
     url = "https://api.deepseek.com/v1/chat/completions"
@@ -125,8 +140,8 @@ async def call_deepseek(messages):
     payload = {
         "model": "deepseek-chat",
         "messages": messages,
-        "temperature": 1.1, # 稍微調高溫度增加感性
-        "max_tokens": 500,  # 限制輸出長度，避免過長
+        "temperature": 1.1, # 溫度調高，增加感性與隨機性
+        "max_tokens": 500,  # 限制長度，避免長篇大論
     }
 
     try:
@@ -143,22 +158,12 @@ async def call_deepseek(messages):
         data = res.json()
         return data["choices"][0]["message"]["content"]
     except Exception:
-        return f"(DeepSeek 回傳異常) text: {res.text[:200]}"
+        return f"(DeepSeek 回傳結構異常) text: {res.text[:200]}"
 
 
-# ----------------------------------------------------------
-# 格式整理
-# ----------------------------------------------------------
-
-def enforce_format_simple(text):
-    if not text:
-        return "…"
-    return text.strip()
-
-
-# ----------------------------------------------------------
-# 回覆生成流程
-# ----------------------------------------------------------
+# ==========================================================
+# ⚙️ Reply Generation Logic (生成邏輯核心)
+# ==========================================================
 
 async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=None):
     history = load_history(chat_id, redis_client)
@@ -175,7 +180,7 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
     state["last_user_timestamp"] = time.time()
     save_state(chat_id, state, redis_client)
 
-    # 圖片模式
+    # 圖片模式處理
     if image_b64:
         out = await analyze_image(image_b64)
         out = enforce_format_simple(out)
@@ -186,6 +191,7 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
     # 判斷是否需要搜尋新聞
     needs_search = any(k in (user_text or "") for k in ["是什麼", "介紹", "查", "是誰"])
 
+    # 獲取 Persona (包含那些絕對指令)
     persona = get_persona(
         news=state.get("news_cache", "今天沒有新聞。"),
         minutes_since_last=minutes_since_last,
@@ -195,11 +201,9 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
     messages = [{"role": "system", "content": persona}] + history
     messages.append({"role": "user", "content": user_text})
 
+    # 處理搜尋
     if needs_search:
         try:
-            # 顯示正在搜尋狀態，因為搜尋通常比較久
-            # 這裡無法直接 await bot action，因為 generate_reply 是純邏輯層
-            # 但我們可以先不處理，讓使用者等一下
             news = await search_news()
             state["news_cache"] = news
             save_state(chat_id, state, redis_client)
@@ -207,53 +211,51 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
         except Exception as e:
             print(f"Search failed: {e}")
 
-    # 主回覆
+    # 呼叫 DeepSeek
     out = await call_deepseek(messages)
     out = enforce_format_simple(out)
 
-    # 防同質化
+    # 防同質化 (如果跟上一句太像，重跑一次)
     last_reply = get_last_assistant_reply(history)
     if is_too_similar(out, last_reply):
         print("Trigger anti-repetition, regenerating...")
         out = await call_deepseek(messages)
         out = enforce_format_simple(out)
 
-    # 儲存完整回覆 (在 History 裡存完整的，顯示時才切分)
+    # 儲存完整對話紀錄
     history.append({"role": "assistant", "content": out})
     save_history(chat_id, history, redis_client)
 
     return out
 
 
-# ----------------------------------------------------------
-# handle_text (修改版：使用氣泡發送)
-# ----------------------------------------------------------
+# ==========================================================
+# 🎮 Handlers (事件處理)
+# ==========================================================
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """處理使用者文字訊息"""
     if update.effective_chat.id != ADMIN_ID:
         return
 
     chat_id = ADMIN_ID
     text = update.message.text
 
-    # 1. 為了讓使用者知道收到訊息了，先顯示一次 Typing
+    # 1. 顯示 Typing，告知使用者已收到
     await context.bot.send_chat_action(chat_id=chat_id, action=constants.ChatAction.TYPING)
 
-    # 2. 生成回覆 (這是一個完整的長字串)
+    # 2. 生成完整回應 (這是一個包含換行的長字串)
     out = await generate_reply(chat_id, user_text=text)
     
-    # 3. 分割 CN/JP (如果有的話)
+    # 3. 切分 CN/JP (如果有的話)
     cn, jp = split_reply(out)
 
-    # 4. 使用氣泡模式發送
+    # 4. 進入擬人化氣泡發送流程 (關鍵步驟)
     await send_message_in_bubbles(context.bot, chat_id, cn)
 
 
-# ----------------------------------------------------------
-# 推播 (修改版：使用氣泡發送)
-# ----------------------------------------------------------
-
 async def intelligent_push(context: ContextTypes.DEFAULT_TYPE):
+    """主動推播邏輯"""
     chat_id = ADMIN_ID
     state = load_state(chat_id, redis_client)
     history = load_history(chat_id, redis_client)
@@ -261,28 +263,26 @@ async def intelligent_push(context: ContextTypes.DEFAULT_TYPE):
     now = time.time()
     last_talk = state.get("last_user_timestamp", 0)
 
-    # 夜間靜音：23:00 ~ 08:00 不推播
+    # 夜間靜音 (23:00 - 08:00)
     lt = time.localtime(now)
     hour = lt.tm_hour
     if hour >= 23 or hour < 8:
         return
 
-    # 冷卻檢查
+    # 冷卻機制 (太近不推，太久不推)
     if now - last_talk < 180: return
     if now - last_talk > 2 * 3600: return
 
     minutes_since_last = int((now - last_talk) / 60) if last_talk else None
 
+    # 獲取 Persona (開啟主動觸發標記)
     persona = get_persona(
         news=state.get("news_cache", "今天沒有新聞。"),
         minutes_since_last=minutes_since_last,
-        timer_trigger=True, # 這裡設為 True 觸發 push lines
+        timer_trigger=True, 
     )
     
-    # 注意：這裡我們不需要額外餵 user prompt，
-    # 因為 persona_config.py 裡的 timer_trigger=True 會自動把 push line 加到 system prompt 裡。
-    # DeepSeek 看到 system prompt 裡的 [中斷請求] 就會自動開口。
-    
+    # 這裡只給 system prompt 即可，DeepSeek 會根據 System 裡的指示主動開口
     messages = [
         {"role": "system", "content": persona},
         {"role": "user", "content": "（系統自動觸發：請根據 System Prompt 中的 [中斷請求] 進行主動發言）"},
@@ -292,26 +292,23 @@ async def intelligent_push(context: ContextTypes.DEFAULT_TYPE):
     out = enforce_format_simple(out)
     cn, jp = split_reply(out)
 
-    # 使用氣泡發送推播
+    # 也是使用氣泡發送，保持一致性
     await send_message_in_bubbles(context.bot, chat_id, cn)
 
     history.append({"role": "assistant", "content": out})
     save_history(chat_id, history, redis_client)
 
 
-# ----------------------------------------------------------
-# reset
-# ----------------------------------------------------------
-
 async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """重置記憶"""
     save_history(ADMIN_ID, [], redis_client)
     save_state(ADMIN_ID, {}, redis_client)
-    await update.message.reply_text("（記憶體已格式化... 我們重新開始吧。）")
+    await update.message.reply_text("（記憶體緩存已清除... 視窗重新初始化。）")
 
 
-# ----------------------------------------------------------
-# main
-# ----------------------------------------------------------
+# ==========================================================
+# 🚀 Main Entry
+# ==========================================================
 
 def main():
     global app
@@ -321,6 +318,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT, handle_text))
     app.add_handler(CommandHandler("reset", cmd_reset))
 
+    # JobQueue 設定
     jq = getattr(app, "job_queue", None)
     if jq is not None:
         jq.run_repeating(intelligent_push, interval=1800, first=60)
@@ -328,7 +326,7 @@ def main():
     else:
         print("⚠ JobQueue 未啟用")
 
-    print("🚀 Lilith V9.0 — DeepSeek + Human-like Bubble Mode Running")
+    print("🚀 Lilith V9.0 Final — DeepSeek + Code Style Actions + Bubble Chat")
     app.run_polling()
 
 
