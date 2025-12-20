@@ -1,23 +1,21 @@
 # ==========================================================
-# main.py (DeepSeek + Anti-Repetition + Safe JobQueue)
+# main.py (DeepSeek + Anti-Repetition + Human-like Bubbles)
 # ==========================================================
 
 import os, io, asyncio, random, time, contextlib, requests, difflib
-from telegram import Update
+from telegram import Update, constants
 from telegram.ext import (
     ApplicationBuilder, MessageHandler, CommandHandler,
     filters, ContextTypes
 )
 
-from core.persona_config import get_persona, PUSH_LINES
+from core.persona_config import get_persona
 from core.redis_store import (
     init_redis, save_history, load_history,
     save_state, load_state
 )
 from core.news import search_news
 from core.vision import analyze_image
-from core.tts import tts_jp
-
 
 # ----------------------------------------------------------
 # ENV
@@ -59,18 +57,52 @@ def get_last_assistant_reply(history):
 
 
 # ----------------------------------------------------------
-# Typing animation
+# ✨ Human-like Bubble Sender (擬人化氣泡發送)
 # ----------------------------------------------------------
 
-async def send_typing(chat_id):
-    try:
-        await app.bot.send_chat_action(chat_id, "typing")
-    except Exception:
-        pass
+async def send_message_in_bubbles(bot, chat_id, full_text):
+    """
+    將完整的 AI 回覆文字，依照換行符號切分，
+    模擬真人打字節奏，一句一句發送。
+    """
+    if not full_text:
+        return
+
+    # 1. 依照換行切分 (過濾掉空行)
+    segments = [seg.strip() for seg in full_text.split('\n') if seg.strip()]
+
+    for i, segment in enumerate(segments):
+        # 2. 計算模擬延遲時間
+        # 基礎延遲 0.3 秒 + 每個字 0.05 ~ 0.08 秒的浮動時間
+        # 這樣長句子會打比較久，短句子會秒回
+        char_delay = 0.05 + random.uniform(0, 0.03)
+        delay = 0.5 + (len(segment) * char_delay)
+
+        # 設定上限，避免長文讓使用者等太久 (最長等待 3.5 秒)
+        delay = min(delay, 3.5)
+
+        # 第一句如果是極短句 (如: 嗯、好)，縮短延遲以營造「秒回」感
+        if i == 0 and len(segment) < 3:
+            delay = 0.5
+
+        # 3. 顯示「正在輸入...」狀態
+        try:
+            await bot.send_chat_action(chat_id=chat_id, action=constants.ChatAction.TYPING)
+        except Exception:
+            pass
+
+        # 4. 執行延遲
+        await asyncio.sleep(delay)
+
+        # 5. 發送該段落
+        try:
+            await bot.send_message(chat_id=chat_id, text=segment)
+        except Exception as e:
+            print(f"Error sending segment: {e}")
 
 
 # ----------------------------------------------------------
-# 分割答案
+# 分割答案 (保留舊有邏輯)
 # ----------------------------------------------------------
 
 def split_reply(text):
@@ -85,12 +117,6 @@ def split_reply(text):
 # ----------------------------------------------------------
 
 async def call_deepseek(messages):
-    """
-    呼叫 DeepSeek API，但加入強韌錯誤處理：
-    - API 回傳非 JSON → 不 crash
-    - 連線失敗 → 給 fallback 訊息
-    """
-
     url = "https://api.deepseek.com/v1/chat/completions"
     headers = {
         "Content-Type": "application/json",
@@ -99,31 +125,26 @@ async def call_deepseek(messages):
     payload = {
         "model": "deepseek-chat",
         "messages": messages,
-        "temperature": 0.95,
+        "temperature": 1.1, # 稍微調高溫度增加感性
+        "max_tokens": 500,  # 限制輸出長度，避免過長
     }
 
     try:
         res = await asyncio.to_thread(
-            requests.post, url, headers=headers, json=payload, timeout=20
+            requests.post, url, headers=headers, json=payload, timeout=30
         )
     except Exception as e:
         return f"(DeepSeek 連線失敗: {e})"
 
-    # 如果 status code 錯誤 → 回傳 API 錯誤內容
     if res.status_code != 200:
         return f"(DeepSeek API 錯誤 {res.status_code}) 回應: {res.text[:200]}"
 
-    # 嘗試解析 JSON
     try:
         data = res.json()
-    except Exception:
-        return f"(DeepSeek 回傳非 JSON) 回應: {res.text[:200]}"
-
-    # 正常輸出
-    try:
         return data["choices"][0]["message"]["content"]
     except Exception:
-        return f"(DeepSeek 回傳結構異常) data: {data}"
+        return f"(DeepSeek 回傳異常) text: {res.text[:200]}"
+
 
 # ----------------------------------------------------------
 # 格式整理
@@ -131,19 +152,19 @@ async def call_deepseek(messages):
 
 def enforce_format_simple(text):
     if not text:
-        return "…（無內容）"
+        return "…"
     return text.strip()
 
 
 # ----------------------------------------------------------
-# 回覆生成流程（含防同質化 + minutes_since_last）
+# 回覆生成流程
 # ----------------------------------------------------------
 
-async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=None, context=None):
+async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=None):
     history = load_history(chat_id, redis_client)
     state = load_state(chat_id, redis_client)
 
-    # 計算距離上一次對話經過幾分鐘（在覆蓋前先算）
+    # 計算距離上一次對話經過幾分鐘
     last_ts = state.get("last_user_timestamp")
     if last_ts:
         minutes_since_last = int((time.time() - last_ts) / 60)
@@ -154,60 +175,50 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
     state["last_user_timestamp"] = time.time()
     save_state(chat_id, state, redis_client)
 
-    typing_task = asyncio.create_task(send_typing(chat_id))
+    # 圖片模式
+    if image_b64:
+        out = await analyze_image(image_b64)
+        out = enforce_format_simple(out)
+        history.append({"role": "assistant", "content": out})
+        save_history(chat_id, history, redis_client)
+        return out
 
-    try:
-        # 圖片模式
-        if image_b64:
-            out = await analyze_image(image_b64)
-            out = enforce_format_simple(out)
-            history.append({"role": "assistant", "content": out})
-            save_history(chat_id, history, redis_client)
-            return out
+    # 判斷是否需要搜尋新聞
+    needs_search = any(k in (user_text or "") for k in ["是什麼", "介紹", "查", "是誰"])
 
-        # 語音模式（目前僅佔位）
-        if voice_data:
-            user_text = "(語音內容接收，但語音辨識未啟用)"
+    persona = get_persona(
+        news=state.get("news_cache", "今天沒有新聞。"),
+        minutes_since_last=minutes_since_last,
+        timer_trigger=False,
+    )
 
-        # 判斷是否需要搜尋新聞
-        needs_search = any(
-            k in (user_text or "")
-            for k in ["是什麼", "介紹", "查", "是誰"]
-        )
+    messages = [{"role": "system", "content": persona}] + history
+    messages.append({"role": "user", "content": user_text})
 
-        # persona 會帶入 minutes_since_last；timer_trigger 目前先固定 False
-        persona = get_persona(
-            news=state.get("news_cache", "今天沒有新聞。"),
-            minutes_since_last=minutes_since_last,
-            timer_trigger=False,
-        )
-
-        messages = [{"role": "system", "content": persona}] + history
-        messages.append({"role": "user", "content": user_text})
-
-        # 先處理搜尋（如果有的話）
-        if needs_search:
+    if needs_search:
+        try:
+            # 顯示正在搜尋狀態，因為搜尋通常比較久
+            # 這裡無法直接 await bot action，因為 generate_reply 是純邏輯層
+            # 但我們可以先不處理，讓使用者等一下
             news = await search_news()
             state["news_cache"] = news
             save_state(chat_id, state, redis_client)
             messages.append({"role": "system", "content": f"(搜尋結果){news}"})
+        except Exception as e:
+            print(f"Search failed: {e}")
 
-        # 主回覆
+    # 主回覆
+    out = await call_deepseek(messages)
+    out = enforce_format_simple(out)
+
+    # 防同質化
+    last_reply = get_last_assistant_reply(history)
+    if is_too_similar(out, last_reply):
+        print("Trigger anti-repetition, regenerating...")
         out = await call_deepseek(messages)
         out = enforce_format_simple(out)
 
-        # === 防同質化：如果跟上一句太像，就重生一次 ===
-        last_reply = get_last_assistant_reply(history)
-        if is_too_similar(out, last_reply):
-            out = await call_deepseek(messages)
-            out = enforce_format_simple(out)
-
-    finally:
-        typing_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await typing_task
-
-    # 儲存新回覆
+    # 儲存完整回覆 (在 History 裡存完整的，顯示時才切分)
     history.append({"role": "assistant", "content": out})
     save_history(chat_id, history, redis_client)
 
@@ -215,7 +226,7 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, voice_data=Non
 
 
 # ----------------------------------------------------------
-# handle_text
+# handle_text (修改版：使用氣泡發送)
 # ----------------------------------------------------------
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -225,13 +236,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = ADMIN_ID
     text = update.message.text
 
+    # 1. 為了讓使用者知道收到訊息了，先顯示一次 Typing
+    await context.bot.send_chat_action(chat_id=chat_id, action=constants.ChatAction.TYPING)
+
+    # 2. 生成回覆 (這是一個完整的長字串)
     out = await generate_reply(chat_id, user_text=text)
+    
+    # 3. 分割 CN/JP (如果有的話)
     cn, jp = split_reply(out)
-    await update.message.reply_text(cn)
+
+    # 4. 使用氣泡模式發送
+    await send_message_in_bubbles(context.bot, chat_id, cn)
 
 
 # ----------------------------------------------------------
-# 推播（LLM 生成，不使用固定句）
+# 推播 (修改版：使用氣泡發送)
 # ----------------------------------------------------------
 
 async def intelligent_push(context: ContextTypes.DEFAULT_TYPE):
@@ -248,40 +267,33 @@ async def intelligent_push(context: ContextTypes.DEFAULT_TYPE):
     if hour >= 23 or hour < 8:
         return
 
-    # 最近 3 分鐘內有互動 → 不推播
-    if now - last_talk < 180:
-        return
+    # 冷卻檢查
+    if now - last_talk < 180: return
+    if now - last_talk > 2 * 3600: return
 
-    # 超過 2 小時完全沒互動 → 也不再主動刷存在感
-    if now - last_talk > 2 * 3600:
-        return
-
-    # 距離上次對話的分鐘數（給 persona）
     minutes_since_last = int((now - last_talk) / 60) if last_talk else None
 
     persona = get_persona(
         news=state.get("news_cache", "今天沒有新聞。"),
         minutes_since_last=minutes_since_last,
-        timer_trigger=False,
+        timer_trigger=True, # 這裡設為 True 觸發 push lines
     )
-
-    push_instruction = (
-        "請生成**一行推播訊息**，必須符合 persona 中的『推播限制規則』："
-        "不可多段、不可故事化、不可超過 35 字，只能一句簡短、"
-        "調皮、主動、活潑的少女語氣。"
-    )
-
+    
+    # 注意：這裡我們不需要額外餵 user prompt，
+    # 因為 persona_config.py 裡的 timer_trigger=True 會自動把 push line 加到 system prompt 裡。
+    # DeepSeek 看到 system prompt 裡的 [中斷請求] 就會自動開口。
+    
     messages = [
         {"role": "system", "content": persona},
-        {"role": "user", "content": push_instruction},
+        {"role": "user", "content": "（系統自動觸發：請根據 System Prompt 中的 [中斷請求] 進行主動發言）"},
     ]
 
     out = await call_deepseek(messages)
     out = enforce_format_simple(out)
-
     cn, jp = split_reply(out)
 
-    await context.bot.send_message(chat_id, cn)
+    # 使用氣泡發送推播
+    await send_message_in_bubbles(context.bot, chat_id, cn)
 
     history.append({"role": "assistant", "content": out})
     save_history(chat_id, history, redis_client)
@@ -294,7 +306,7 @@ async def intelligent_push(context: ContextTypes.DEFAULT_TYPE):
 async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_history(ADMIN_ID, [], redis_client)
     save_state(ADMIN_ID, {}, redis_client)
-    await update.message.reply_text("（系統已重置）")
+    await update.message.reply_text("（記憶體已格式化... 我們重新開始吧。）")
 
 
 # ----------------------------------------------------------
@@ -309,23 +321,16 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT, handle_text))
     app.add_handler(CommandHandler("reset", cmd_reset))
 
-    # ⚠ JobQueue 在某些環境下可能是 None，先檢查再註冊
     jq = getattr(app, "job_queue", None)
     if jq is not None:
-        jq.run_repeating(intelligent_push, interval=1800, first=20)
+        jq.run_repeating(intelligent_push, interval=1800, first=60)
         print("✅ JobQueue 啟用：已註冊 intelligent_push")
     else:
-        print("⚠ JobQueue 未啟用：不會進行推播（intelligent_push）")
+        print("⚠ JobQueue 未啟用")
 
-    print("🚀 Congyin V8.6 — DeepSeek Version + Anti-Repetition Running")
+    print("🚀 Lilith V9.0 — DeepSeek + Human-like Bubble Mode Running")
     app.run_polling()
 
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
