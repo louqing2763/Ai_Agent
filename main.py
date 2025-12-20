@@ -99,7 +99,7 @@ async def call_deepseek(messages):
     payload = {
         "model": "deepseek-chat",
         "messages": messages,
-        "temperature": 1.1,
+        "temperature": 0.95,
     }
 
     try:
@@ -323,6 +323,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
