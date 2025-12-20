@@ -89,6 +89,7 @@ async def send_message_in_bubbles(bot, chat_id, full_text):
     for i, segment in enumerate(segments):
         # 2. 計算模擬延遲時間
         # 基礎延遲 0.3 秒 + 每個字 0.05 ~ 0.08 秒的浮動時間
+        # 這樣長句子會打比較久，短句子會秒回
         char_delay = 0.05 + random.uniform(0, 0.03)
         delay = 0.5 + (len(segment) * char_delay)
 
@@ -108,10 +109,11 @@ async def send_message_in_bubbles(bot, chat_id, full_text):
         # 4. 執行延遲
         await asyncio.sleep(delay)
 
-        # 5. 樣式美化：將（動作）轉為 <code>樣式
+        # 5. ✨ 視覺魔法：將（動作）轉為 <code>樣式 ✨
         # 使用 Regex 把全形括號內容包進 HTML code 標籤
         # 效果：變成電腦終端機字體，很有 AI 系統感
         if "（" in segment and "）" in segment:
+             # 把 （...） 替換成 <code>（...）</code>
              formatted_text = re.sub(r'（(.*?)）', r'<code>（\1）</code>', segment)
         else:
              formatted_text = segment
@@ -141,7 +143,7 @@ async def call_deepseek(messages):
         "model": "deepseek-chat",
         "messages": messages,
         "temperature": 1.1, # 溫度調高，增加感性與隨機性
-        "max_tokens": 500,  # 限制長度，避免長篇大論
+        "max_tokens": 500,  # 限制最大長度
     }
 
     try:
