@@ -339,9 +339,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==========================================================
 # 🚀 啟動區 (Boot)
 # ==========================================================
-def main():
-    # ★ 在做任何事情之前，先執行獵殺
-    kill_impostors()
+
 def main():
     print("🚀 Lilith v9.5 (Nurse Edition) is starting treatment...")
     
@@ -366,4 +364,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
