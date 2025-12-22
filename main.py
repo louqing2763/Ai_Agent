@@ -297,27 +297,62 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     print("🚀 Lilith v9.5 (Nurse Edition) is starting treatment...")
     
+    # 建立 Application 物件
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # 註冊指令
+    # 註冊指令與處理器
     app.add_handler(CommandHandler("reset", cmd_reset))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("care", cmd_force_care))
-    
-    # 註冊訊息處理 (文字 + 圖片)
     app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
 
-    # 啟用 JobQueue (心跳機制)
+    # 啟用 JobQueue
     if app.job_queue:
-        # 每 600 秒 (10分鐘) 檢查一次
         app.job_queue.run_repeating(check_inactivity_and_care, interval=600, first=60)
-        print("✅ 生命維持系統 (Heartbeat) 已連線：每 10 分鐘監測一次。")
+        print("✅ 生命維持系統 (Heartbeat) 已連線。")
 
-    print(" System Ready. Waiting for patient (User)...")
-    app.run_polling()
+    print("🏥 System Ready. Attempting to connect to Telegram...")
+
+    # =====================================================
+    # 🛡️ 防撞啟動機制 (Anti-Conflict Loop)
+    # =====================================================
+    import time
+    from telegram.error import Conflict
+
+    retry_count = 0
+    max_retries = 10  # 最多試 10 次 (約 50 秒)
+
+    while retry_count < max_retries:
+        try:
+            # 嘗試啟動機器人
+            # drop_pending_updates=True 可以忽略掉舊的訊息，避免啟動時卡住
+            app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
+            
+            # 如果成功啟動並正常結束，就跳出迴圈
+            break 
+
+        except Conflict:
+            # ★ 捕捉到 409 Conflict 錯誤 ★
+            retry_count += 1
+            wait_time = 5
+            
+            print(f"⚠️ [衝突警報] 偵測到另一個莉莉絲正在運行 (Attempt {retry_count}/{max_retries})")
+            print(f"⏳ 正在等待舊的分身下線... ({wait_time}秒後重試)")
+            
+            # 等待 5 秒，讓 Railway 有時間去殺死舊容器
+            time.sleep(wait_time)
+        
+        except Exception as e:
+            print(f"❌ 發生未預期的錯誤: {e}")
+            # 如果是其他錯誤，就真的要停下來檢查了
+            raise e
+
+    if retry_count >= max_retries:
+        print("💀 放棄治療：舊的分身一直沒下線，請手動檢查 Railway。")
 
 if __name__ == "__main__":
     main()
+
 
 
 
