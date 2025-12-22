@@ -10,7 +10,51 @@ from telegram.ext import (
     ApplicationBuilder, MessageHandler, CommandHandler,
     filters, ContextTypes
 )
+# ==========================================================
+# 🔪 Self-Correction: The Highlander Protocol
+# ==========================================================
+import subprocess
+import os
+import signal
 
+def kill_impostors():
+    """
+    [獵殺分身]
+    啟動時，自動搜尋並殺死其他正在運行的 main.py 程序。
+    確保只有這一個莉莉絲存活。
+    """
+    try:
+        # 1. 獲取當前這隻莉莉絲的 PID (身分證字號)
+        current_pid = os.getpid()
+        
+        # 2. 搜尋所有包含 "main.py" 的進程 PID
+        # 使用 pgrep -f 來搜尋完整指令
+        pids = subprocess.check_output(["pgrep", "-f", "main.py"]).decode().split()
+        
+        killed_count = 0
+        
+        for pid_str in pids:
+            pid = int(pid_str)
+            
+            # 3. 如果這個 PID 不是我自己，那就是冒牌貨 -> 殺掉
+            if pid != current_pid:
+                print(f"🔪 發現舊的分身 (PID: {pid})，正在執行清除...")
+                try:
+                    os.kill(pid, signal.SIGKILL) # 強制終結
+                    killed_count += 1
+                except ProcessLookupError:
+                    pass # 已經死了
+                except Exception as e:
+                    print(f"⚠️ 清除失敗 (PID: {pid}): {e}")
+
+        if killed_count > 0:
+            print(f"✅ 已清除 {killed_count} 個舊程序。我是唯一的莉莉絲。")
+            # 稍微停頓一下，讓屍體涼透 (釋放端口)
+            time.sleep(2) 
+            
+    except Exception as e:
+        # 如果 pgrep 失敗 (例如在 Windows)，就跳過
+        print(f"⚠️ 無法執行自動獵殺 (可能是系統不支援 pgrep): {e}")
 # ==========================================================
 # 📦 模組載入區 (Imports)
 # ==========================================================
@@ -296,6 +340,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 🚀 啟動區 (Boot)
 # ==========================================================
 def main():
+    # ★ 在做任何事情之前，先執行獵殺
+    kill_impostors()
+def main():
     print("🚀 Lilith v9.5 (Nurse Edition) is starting treatment...")
     
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
@@ -319,3 +366,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
