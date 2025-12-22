@@ -84,15 +84,17 @@ Lilith: 當然呀。
 # ==========================================
 # 狀態檢查函數 (State Checker)
 # ==========================================
-def get_persona_cake_edition(user_mood="neutral"):
+def get_persona(user_mood="neutral", news=""): 
+    # 注意：我也順便幫你補上了 news 參數，以免 main.py 傳參數進來時報錯
     persona = PERSONA_PROMPT + "\n" + FEW_SHOT_EXAMPLES
-    
-    # 這裡不需要複雜的時間判斷，因為蛋糕隨時都是甜的
-    # 但可以根據 User 的狀態加一點「調味」
     
     if user_mood == "tired":
         persona += "\n[當前模式]：User 累了。切換為「全糖/治癒」模式。少說廢話，多給抱抱。\n"
     elif user_mood == "bored":
         persona += "\n[當前模式]：User 無聊。切換為「跳跳糖/惡作劇」模式。說點中二的話逗他笑。\n"
         
+    # 如果有新聞傳進來，也稍微處理一下，雖然蛋糕不關心時事
+    if news:
+        persona += f"\n[外部資訊] 雖然不重要，但 User 提到：{news}\n"
+
     return persona
