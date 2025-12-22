@@ -294,10 +294,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==========================================================
 # 🚀 啟動區 (Boot)
 # ==========================================================
+# ... (前面的 imports 和函數保持不變)
+
 def main():
-    print("🚀 Lilith v9.5 (Nurse Edition) is starting treatment...")
-    
-    # 建立 Application 物件
+    import time # 確保有 import time
+
+    print("🚀 Lilith v9.5 (Nurse Edition) is waking up...")
+
+    # =====================================================
+    # 🛌 戰略性賴床 (The 10-Second Rule)
+    # =====================================================
+    # 與其跟舊的分身打架，不如讓子彈飛一會兒。
+    # 這 10 秒鐘是用來讓 Railway 有時間殺死舊容器的。
+    print("⏳ 正在等待舊的時間線收束 (Waiting for 10s)...")
+    time.sleep(10)
+    print("✨ 時間線收束完成。莉莉絲，出擊！")
+
+    # =====================================================
+    # 🔥 正式啟動
+    # =====================================================
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
     # 註冊指令與處理器
@@ -311,48 +326,10 @@ def main():
         app.job_queue.run_repeating(check_inactivity_and_care, interval=600, first=60)
         print("✅ 生命維持系統 (Heartbeat) 已連線。")
 
-    print("🏥 System Ready. Attempting to connect to Telegram...")
-
-    # =====================================================
-    # 🛡️ 防撞啟動機制 (Anti-Conflict Loop)
-    # =====================================================
-    import time
-    from telegram.error import Conflict
-
-    retry_count = 0
-    max_retries = 10  # 最多試 10 次 (約 50 秒)
-
-    while retry_count < max_retries:
-        try:
-            # 嘗試啟動機器人
-            # drop_pending_updates=True 可以忽略掉舊的訊息，避免啟動時卡住
-            app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
-            
-            # 如果成功啟動並正常結束，就跳出迴圈
-            break 
-
-        except Conflict:
-            # ★ 捕捉到 409 Conflict 錯誤 ★
-            retry_count += 1
-            wait_time = 5
-            
-            print(f"⚠️ [衝突警報] 偵測到另一個莉莉絲正在運行 (Attempt {retry_count}/{max_retries})")
-            print(f"⏳ 正在等待舊的分身下線... ({wait_time}秒後重試)")
-            
-            # 等待 5 秒，讓 Railway 有時間去殺死舊容器
-            time.sleep(wait_time)
-        
-        except Exception as e:
-            print(f"❌ 發生未預期的錯誤: {e}")
-            # 如果是其他錯誤，就真的要停下來檢查了
-            raise e
-
-    if retry_count >= max_retries:
-        print("💀 放棄治療：舊的分身一直沒下線，請手動檢查 Railway。")
+    print("🏥 System Ready. Connection established.")
+    
+    # 直接啟動，不再搞複雜的防護網，因為我們已經等得夠久了
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
-
-
-
-
