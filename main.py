@@ -32,6 +32,14 @@ logging.basicConfig(
     level=logging.INFO
 )
 
+# 🔇 【新增這兩行】靜音補丁
+# 只有當發生 WARNING 或 ERROR 時，這兩個傢伙才准說話。
+# 平常的 "200 OK" 全部隱藏。
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING) # 讓 Telegram 庫也安靜點
+
+
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
@@ -333,3 +341,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
