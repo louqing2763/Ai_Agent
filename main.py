@@ -25,6 +25,11 @@ try:
         from core.vision import analyze_image
     except ImportError:
         analyze_image = None
+os.environ['TZ'] = 'Asia/Taipei'
+try:
+    time.tzset() # Windows 系統可能不支援這行，Linux/Mac/雲端容器都支援
+except AttributeError:
+    pass # Windows 就跳過，通常本地跑時間是對的
         
 except ImportError as e:
     print(f"⚠️ 嚴重警告：核心模組載入失敗 ({e})。請確保 core 資料夾完整。")
@@ -487,3 +492,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
