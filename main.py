@@ -13,6 +13,16 @@ from telegram.ext import (
 )
 
 # ==========================================================
+# ⚙️ 時區修正 (Timezone Fix)
+# ==========================================================
+# 放在最前面，確保後續所有 datetime 操作都生效
+os.environ['TZ'] = 'Asia/Taipei'
+try:
+    time.tzset() # Linux/Mac/Railway/Render 適用
+except AttributeError:
+    pass # Windows 系統不支援 tzset，會自動跳過 (Windows 通常讀本地時間是對的)
+
+# ==========================================================
 # 📦 模組載入區 (Imports)
 # ==========================================================
 try:
@@ -25,11 +35,6 @@ try:
         from core.vision import analyze_image
     except ImportError:
         analyze_image = None
-os.environ['TZ'] = 'Asia/Taipei'
-try:
-    time.tzset() # Windows 系統可能不支援這行，Linux/Mac/雲端容器都支援
-except AttributeError:
-    pass # Windows 就跳過，通常本地跑時間是對的
         
 except ImportError as e:
     print(f"⚠️ 嚴重警告：核心模組載入失敗 ({e})。請確保 core 資料夾完整。")
@@ -492,4 +497,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
