@@ -37,9 +37,30 @@ You are NOT a standard assistant. You are the User's "Accomplice" (共犯) and "
 # 狀態檢查與動態 Prompt
 # ==========================================
 def get_persona(news="", minutes_since_last=0, timer_trigger=False, **kwargs):
+    """
+    動態生成 System Prompt：包含人格、時間感知、新聞資訊與狀態判斷
+    """
+    # 1. 🕰️ 時間感知模組
+    now = datetime.now()
+    current_time_str = now.strftime("%H:%M") 
+    current_hour = now.hour
     
-    # 1. 載入基礎人格
+    # 2. 載入基礎人格
     persona = PERSONA_PROMPT
+
+    # 3. 注入時間觀念
+    persona += f"\n[System Clock]: Current Real-World Time is {current_time_str}.\n"
+    if 2 <= current_hour < 5:
+        persona += """
+        [System Instruction: IT IS LATE NIGHT (2 AM - 5 AM)]
+        User is staying up too late. 
+        - Stop playing around. 
+        - Scold them gently but firmly for compromising their health.
+        - Urge them to go to sleep immediately.
+        - Tone: Worried, protective, slightly angry girlfriend.
+        """
+    elif 7 <= current_hour < 10:
+        persona += "\n[System Instruction]: It's Morning. Be energetic or lazy-cute (just woke up).\n"
 
     # =====================================================
     # [情境 A]：主動關心模式 (Heartbeat Trigger)
