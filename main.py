@@ -152,11 +152,11 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, timer_trigger=
     # 3. 獲取 Persona (呼叫 Core)
     # ✨ 這裡變乾淨了，直接呼叫 core 裡的函數
     persona = get_persona(
+        length_mode=length_mode,  # 👈 新增這行，讓 Persona 知道現在是什麼模式
         news=state.get("news_cache", ""),
         minutes_since_last=minutes_since_last, 
         timer_trigger=timer_trigger 
     )
-
     # 4. 準備指令 (System Side)
     length_instruction = ""
     if length_mode == "short":
@@ -354,3 +354,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
