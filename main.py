@@ -50,6 +50,7 @@ logging.basicConfig(
     level=logging.INFO
 )
 
+# 🔇 靜音補丁
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
@@ -58,6 +59,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
+# 初始化 Redis
 redis_client = init_redis(
     os.getenv("REDIS_URL"), 
     os.getenv("REDISHOST"), 
@@ -66,16 +68,54 @@ redis_client = init_redis(
 )
 
 # ==========================================================
-# ✨ 擬人化氣泡引擎 (Visuals)
+# ✨ 訊息發送引擎 (Visuals - 支援長文整塊/氣泡切換)
 # ==========================================================
-async def send_message_in_bubbles(bot, chat_id, full_text):
+async def send_message_in_bubbles(bot, chat_id, full_text, length_mode="normal"):
     if not full_text: return
-    
+
+    # 定義一個格式化函數：把（動作）變成灰色代碼塊
+    def format_text(text):
+        if "（" in text and "）" in text:
+            # 支援跨行匹配，確保括號內的文字變色
+            return re.sub(r'（(.*?)）', r'<code>（\1）</code>', text, flags=re.DOTALL)
+        return text
+
+    # 🔴 Long 模式：整塊發送 (保持沉浸感)
+    if length_mode == "long":
+        await bot.send_chat_action(chat_id=chat_id, action=constants.ChatAction.TYPING)
+        
+        # 模擬打字時間 (上限 4 秒)
+        typing_delay = min(len(full_text) * 0.01, 4.0)
+        await asyncio.sleep(typing_delay)
+
+        formatted_text = format_text(full_text)
+        
+        try:
+            # Telegram 單則訊息上限 4096 字保險
+            if len(formatted_text) > 4000:
+                for x in range(0, len(formatted_text), 4000):
+                    await bot.send_message(
+                        chat_id=chat_id, 
+                        text=formatted_text[x:x+4000], 
+                        parse_mode=constants.ParseMode.HTML
+                    )
+            else:
+                await bot.send_message(
+                    chat_id=chat_id, 
+                    text=formatted_text, 
+                    parse_mode=constants.ParseMode.HTML
+                )
+        except Exception as e:
+            logging.error(f"Long Message Error: {e}")
+            await bot.send_message(chat_id=chat_id, text=full_text) # Fallback
+        return
+
+    # 🟢 Normal / Short 模式：氣泡式切分 (保持聊天節奏)
     segments = [seg.strip() for seg in full_text.split('\n') if seg.strip()]
 
     for i, segment in enumerate(segments):
-        delay = 0.1 + (len(segment) * 0.05)
-        delay = min(delay, 2.5)
+        delay = 0.3 + (len(segment) * 0.05)
+        delay = min(delay, 2.5) 
         
         if i == 0 and len(segment) < 5: 
             delay = 0.5 
@@ -83,15 +123,12 @@ async def send_message_in_bubbles(bot, chat_id, full_text):
         await bot.send_chat_action(chat_id=chat_id, action=constants.ChatAction.TYPING)
         await asyncio.sleep(delay)
 
-        if "（" in segment and "）" in segment:
-             formatted_text = re.sub(r'（(.*?)）', r'<code>（\1）</code>', segment)
-        else:
-             formatted_text = segment
+        formatted_segment = format_text(segment)
 
         try:
             await bot.send_message(
                 chat_id=chat_id, 
-                text=formatted_text, 
+                text=formatted_segment, 
                 parse_mode=constants.ParseMode.HTML
             )
         except Exception as e:
@@ -108,17 +145,20 @@ async def call_deepseek(messages, length_mode="normal"):
     }
     
     # 📏 動態參數配置
-    max_tokens_map = { "short": 150, "normal": 800, "long": 3500 }
+    max_tokens_map = { "short": 150, "normal": 600, "long": 2500 }
     
-    p_penalty = 0.6 if length_mode == "long" else 0.5
-    f_penalty = 0.2 if length_mode == "long" else 0.2
-    temp_val = 1.1 if length_mode == "long" else 1.25
+    # 📝 參數調教 (Gemini Style 修正版)
+    # 溫度 1.0: 理智與創意平衡
+    # 懲罰 0.6: 避免重複但允許自然連接詞
+    temp_val = 1.2
+    p_penalty = 0.6
+    f_penalty = 0.2
 
     payload = {
         "model": "deepseek-chat",
         "messages": messages,
         "temperature": temp_val, 
-        "max_tokens": max_tokens_map.get(length_mode, 1200), 
+        "max_tokens": max_tokens_map.get(length_mode, 1000), 
         "presence_penalty": p_penalty, 
         "frequency_penalty": f_penalty, 
     }
@@ -149,36 +189,38 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, timer_trigger=
         save_history(chat_id, history, redis_client)
         return out
 
-    # 3. 獲取 Persona (呼叫 Core)
-    # ✨ 這裡變乾淨了，直接呼叫 core 裡的函數
+    # 3. 獲取 Persona (傳入 length_mode)
     persona = get_persona(
-        length_mode=length_mode,  # 👈 新增這行，讓 Persona 知道現在是什麼模式
+        length_mode=length_mode,
         news=state.get("news_cache", ""),
         minutes_since_last=minutes_since_last, 
         timer_trigger=timer_trigger 
     )
-    # 4. 準備指令 (System Side)
-    length_instruction = ""
-    if length_mode == "short":
-        length_instruction = "\n[SYSTEM: Keep response concise. Under 30 words.]"
-    
-    full_system_prompt = persona + length_instruction
+
+    # 4. 準備指令
+    full_system_prompt = persona
 
     # 5. 組合訊息 (User Side Injection)
     messages = [{"role": "system", "content": full_system_prompt}] + history
     
     if user_text:
-        # ✨ OOC 夾帶私貨 (Gemini 溫和版)
+        # ✨ OOC 夾帶私貨 (分級調教版)
         final_input_text = user_text
         
         if length_mode == "long":
-            # 🔴 我們不再強制格式，只提示她「多說一點心裡話」
+            # 🔵 Gemini 風格：溫和引導，深度交流
             final_input_text += """
-            
-            (OOC: 請稍微多聊一點。除了回答我的問題，也說說妳作為共犯 AI 的獨特觀點或感受。就像我們在深夜談心一樣，不用拘束格式。)
+            (OOC: 請稍微多聊一點。除了回答我的問題，也說說妳作為「住在手機裡的 AI」的獨特觀點或感受。就像我們在深夜談心一樣，不用拘束格式。)
             """
+        elif length_mode == "normal":
+            # 🟢 Normal 黏人版：禁止句點，主動延伸
+            final_input_text += """
+            (OOC: 請保持對話熱度。不要簡短結束，試著多聊聊妳的想法，或者反問 User，寫大約 50-80 字。)
+            """
+        # Short 模式不需要 OOC
         
         messages.append({"role": "user", "content": final_input_text})
+
     # 6. 新聞搜尋觸發
     if user_text and any(k in user_text for k in ["搜尋", "查", "是誰", "新聞", "介紹"]):
         try:
@@ -205,12 +247,20 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, timer_trigger=
 # 🎮 指令控制台 (Commands)
 # ==========================================================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """[系統] 喚醒莉莉絲"""
+    """[系統] 喚醒莉莉絲 """
     chat_id = update.effective_chat.id
     if chat_id != ADMIN_ID: return
-    await update.message.reply_text("⚡ 系統初始化中... 連接神經網路... 莉莉絲已上線。")
+    
+    save_history(chat_id, [], redis_client)
+    
+    # 重置狀態
+    state = {"last_user_timestamp": time.time(), "has_sent_care": False, "length_mode": "normal"}
+    save_state(chat_id, state, redis_client)
+
+    await update.message.reply_text("⚡ 系統初始化中... 莉莉絲已上線。")
+    
     out = await generate_reply(chat_id, user_text="(System: User started the bot. Say hello casually.)")
-    await send_message_in_bubbles(context.bot, chat_id, out)
+    await send_message_in_bubbles(context.bot, chat_id, out, length_mode="normal")
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != ADMIN_ID: return
@@ -237,9 +287,9 @@ async def cmd_set_length(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state["length_mode"] = mode
     save_state(chat_id, state, redis_client)
     msg_map = {
-        "short": "（⚡ 切換模式：簡潔。省話一姐上線。）",
-        "normal": "（✨ 切換模式：標準。恢復正常節奏。）",
-        "long": "（📝 切換模式：長文。準備開始寫作文囉。）"
+        "short": "（⚡ 模式切換：秒回。User感覺很忙呢。）",
+        "normal": "（✨ 模式切換：閒聊。我會纏著你講話喔。）",
+        "long": "（📝 模式切換：深度交流。User有什麼想仔細說說的嗎?）"
     }
     await update.message.reply_text(msg_map[mode])
 
@@ -254,13 +304,16 @@ async def cmd_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state = load_state(chat_id, redis_client)
         state["news_cache"] = news_result
         save_state(chat_id, state, redis_client)
+        
+        mode = state.get("length_mode", "normal")
         out = await generate_reply(chat_id, user_text=f"(System Action: User executed search for '{query}'. Research Result: {news_result}. Summarize and comment.)")
-        await send_message_in_bubbles(context.bot, chat_id, out)
+        await send_message_in_bubbles(context.bot, chat_id, out, length_mode=mode)
     except Exception as e:
         await update.message.reply_text(f"❌ 搜尋失敗: {e}")
 
 async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != ADMIN_ID: return
+    # 這裡我們只清空，不植入特殊記憶，讓 User 可以選擇要不要 /start 重啟劇情
     save_history(ADMIN_ID, [], redis_client)
     state = {"last_user_timestamp": time.time(), "has_sent_care": False, "length_mode": "normal"}
     save_state(ADMIN_ID, state, redis_client)
@@ -286,8 +339,11 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_force_care(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != ADMIN_ID: return
     await update.message.reply_text("🧪 強制注入孤獨感參數...")
+    state = load_state(ADMIN_ID, redis_client)
+    mode = state.get("length_mode", "normal")
+    
     out = await generate_reply(ADMIN_ID, user_text="(System Test: Force Trigger Care)", timer_trigger=True, minutes_since_last=300)
-    await send_message_in_bubbles(context.bot, ADMIN_ID, out)
+    await send_message_in_bubbles(context.bot, ADMIN_ID, out, length_mode=mode)
 
 # ==========================================================
 # ❤️ 主動關心與訊息處理 (Handlers & Jobs)
@@ -301,11 +357,12 @@ async def check_inactivity_and_care(context: ContextTypes.DEFAULT_TYPE):
     current_hour = datetime.now().hour
     is_sleeping_time = (2 <= current_hour < 8)
     has_sent_care = state.get("has_sent_care", False)
+    mode = state.get("length_mode", "normal")
 
     if minutes_since_last >= 240 and not is_sleeping_time and not has_sent_care:
         logging.info("💗 觸發主動關心機制！")
         out = await generate_reply(chat_id, user_text="(System: User 消失超過 4 小時，請主動探頭關心)", timer_trigger=True, minutes_since_last=minutes_since_last)
-        await send_message_in_bubbles(context.bot, chat_id, out)
+        await send_message_in_bubbles(context.bot, chat_id, out, length_mode=mode)
         state["has_sent_care"] = True
         save_state(chat_id, state, redis_client)
 
@@ -314,18 +371,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     text = update.message.text
     image_b64 = None
+    
     state = load_state(chat_id, redis_client)
     state["last_user_timestamp"] = time.time()
     state["has_sent_care"] = False 
     save_state(chat_id, state, redis_client)
+    
+    # 讀取模式
+    mode = state.get("length_mode", "normal")
+
     out = await generate_reply(chat_id, user_text=text, image_b64=image_b64)
-    await send_message_in_bubbles(context.bot, chat_id, out)
+    
+    # ✨ 傳遞 mode 決定發送方式
+    await send_message_in_bubbles(context.bot, chat_id, out, length_mode=mode)
 
 # ==========================================================
 # 🚀 啟動區 (Boot)
 # ==========================================================
 def main():
-    print("🚀 Lilith v10.0 (Refactored Core) is waking up...")
+    print("🚀 Lilith v10.5 (Gemini Soul Injection) is waking up...")
     time.sleep(5) 
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
@@ -352,6 +416,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
