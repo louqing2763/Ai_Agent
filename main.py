@@ -167,7 +167,7 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, timer_trigger=
     # 5. 組合訊息 (User Side Injection)
     messages = [{"role": "system", "content": full_system_prompt}] + history
     
-   if user_text:
+    if user_text:
         # ✨ OOC 夾帶私貨 (Gemini 溫和版)
         final_input_text = user_text
         
@@ -352,5 +352,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
