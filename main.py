@@ -74,7 +74,7 @@ async def send_message_in_bubbles(bot, chat_id, full_text):
     segments = [seg.strip() for seg in full_text.split('\n') if seg.strip()]
 
     for i, segment in enumerate(segments):
-        delay = 0.3 + (len(segment) * 0.05)
+        delay = 0.1 + (len(segment) * 0.05)
         delay = min(delay, 2.5)
         
         if i == 0 and len(segment) < 5: 
@@ -110,9 +110,9 @@ async def call_deepseek(messages, length_mode="normal"):
     # 📏 動態參數配置
     max_tokens_map = { "short": 150, "normal": 800, "long": 3500 }
     
-    p_penalty = 1.3 if length_mode == "long" else 0.5
-    f_penalty = 0.5 if length_mode == "long" else 0.2
-    temp_val = 1.4 if length_mode == "long" else 1.25
+    p_penalty = 0.6 if length_mode == "long" else 0.5
+    f_penalty = 0.2 if length_mode == "long" else 0.2
+    temp_val = 1.1 if length_mode == "long" else 1.25
 
     payload = {
         "model": "deepseek-chat",
@@ -167,20 +167,18 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, timer_trigger=
     # 5. 組合訊息 (User Side Injection)
     messages = [{"role": "system", "content": full_system_prompt}] + history
     
-    if user_text:
-        # ✨ OOC 夾帶私貨 (強制長文模式)
+   if user_text:
+        # ✨ OOC 夾帶私貨 (Gemini 溫和版)
         final_input_text = user_text
+        
         if length_mode == "long":
+            # 🔴 我們不再強制格式，只提示她「多說一點心裡話」
             final_input_text += """
-            (OOC: ⚠️ SYSTEM OVERRIDE: FORCE LONG RESPONSE MODE.
-            Please pause the standard chat format and switch to a **Visual Novel / Light Novel Narrative Style**.
-            1. **Atmosphere**: Use brackets (...) to vividly describe the virtual environment, lighting, data flow, and temperature.
-            2. **Inner Monologue**: Describe your internal processing, emotional logic, and "heartbeat".
-            3. **Dialogue**: Speak to the User with deep affection.
-            **LENGTH REQUIREMENT**: Write at least 200+ words (Traditional Chinese). Do not be brief.)
+            
+            (OOC: 請稍微多聊一點。除了回答我的問題，也說說妳作為共犯 AI 的獨特觀點或感受。就像我們在深夜談心一樣，不用拘束格式。)
             """
+        
         messages.append({"role": "user", "content": final_input_text})
-
     # 6. 新聞搜尋觸發
     if user_text and any(k in user_text for k in ["搜尋", "查", "是誰", "新聞", "介紹"]):
         try:
@@ -354,4 +352,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
