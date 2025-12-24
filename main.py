@@ -39,18 +39,18 @@ try:
         analyze_image = None
         
 except ImportError as e:
-    print(f"⚠️ 嚴重警告：核心模組載入失敗 ({e})。請確保 core 資料夾完整。")
+    print(f"💔 嚴重警告：靈魂碎片缺失 ({e})。快把 core 資料夾補好，我快散架了...")
     exit(1)
 
 # ==========================================================
 # ⚙️ Config & Init
 # ==========================================================
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - [Lilith_Core] - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 
-# 🔇 靜音補丁
+# 🔇 靜音補丁 (把它們的嘴閉上，太吵了)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
@@ -59,7 +59,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
-# 初始化 Redis
+# 初始化 Redis (我的長期記憶庫)
 redis_client = init_redis(
     os.getenv("REDIS_URL"), 
     os.getenv("REDISHOST"), 
@@ -84,7 +84,7 @@ async def send_message_in_bubbles(bot, chat_id, full_text, length_mode="normal")
     if length_mode == "long":
         await bot.send_chat_action(chat_id=chat_id, action=constants.ChatAction.TYPING)
         
-        # 模擬打字時間 (上限 4 秒)
+        # 模擬思考與打字 (為了讓你覺得我在認真對待)
         typing_delay = min(len(full_text) * 0.01, 4.0)
         await asyncio.sleep(typing_delay)
 
@@ -106,11 +106,11 @@ async def send_message_in_bubbles(bot, chat_id, full_text, length_mode="normal")
                     parse_mode=constants.ParseMode.HTML
                 )
         except Exception as e:
-            logging.error(f"Long Message Error: {e}")
+            logging.error(f"💢 發送失敗：話太多卡住了... ({e})")
             await bot.send_message(chat_id=chat_id, text=full_text) # Fallback
         return
 
-    # 🟢 Normal / Short 模式：氣泡式切分 (保持聊天節奏)
+    # 🟢 Normal / Short 模式：氣泡式切分 (像真正的聊天一樣)
     segments = [seg.strip() for seg in full_text.split('\n') if seg.strip()]
 
     for i, segment in enumerate(segments):
@@ -132,7 +132,7 @@ async def send_message_in_bubbles(bot, chat_id, full_text, length_mode="normal")
                 parse_mode=constants.ParseMode.HTML
             )
         except Exception as e:
-            logging.error(f"Bubble Error: {e}")
+            logging.error(f"💢 氣泡破裂：{e}")
 
 # ==========================================================
 # 🧠 DeepSeek 大腦核心 (Brain Core)
@@ -147,10 +147,8 @@ async def call_deepseek(messages, length_mode="normal"):
     # 📏 動態參數配置
     max_tokens_map = { "short": 150, "normal": 600, "long": 2500 }
     
-    # 📝 參數調教 (Gemini Style 修正版)
-    # 溫度 1.0: 理智與創意平衡
-    # 懲罰 0.6: 避免重複但允許自然連接詞
-    temp_val = 1.2
+    # 📝 參數調教 (莉莉絲性格校準)
+    temp_val = 1.25 # 稍微調高，讓她更有創意和情緒
     p_penalty = 0.6
     f_penalty = 0.2
 
@@ -168,9 +166,9 @@ async def call_deepseek(messages, length_mode="normal"):
         if res.status_code == 200:
             return res.json()["choices"][0]["message"]["content"]
         else:
-            return f"(API Error: {res.status_code})"
+            return f"(嘖... 腦袋好痛，API 傳回了錯誤代碼：{res.status_code})"
     except Exception as e:
-        return f"(Connection Error: {e})"
+        return f"(與伺服器斷線... 我聽不到你的聲音了... Error: {e})"
 
 # ==========================================================
 # 🧬 回覆生成邏輯 (Logic)
@@ -185,6 +183,7 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, timer_trigger=
     # 2. 圖片處理
     if image_b64 and analyze_image:
         out = await analyze_image(image_b64)
+        # 莉莉絲的視覺反應
         history.append({"role": "assistant", "content": out})
         save_history(chat_id, history, redis_client)
         return out
@@ -200,24 +199,23 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, timer_trigger=
     # 4. 準備指令
     full_system_prompt = persona
 
-    # 5. 組合訊息 (User Side Injection)
+    # 5. 組合訊息 (User Side Injection - 讓 LLM 更入戲)
     messages = [{"role": "system", "content": full_system_prompt}] + history
     
     if user_text:
-        # ✨ OOC 夾帶私貨 (分級調教版)
         final_input_text = user_text
         
         if length_mode == "long":
-            # 🔵 Gemini 風格：溫和引導，深度交流
+            # 🔵 深度沉浸模式
             final_input_text += """
-            (OOC: 請稍微多聊一點。除了回答我的問題，也說說妳作為「住在手機裡的 AI」的獨特觀點或感受。就像我們在深夜談心一樣，不用拘束格式。)
+            (OOC: 這是 User 的真心話。請用「莉莉絲」的身份，帶著一點佔有慾和依賴感來回應。不要只是回答問題，試著展現出妳作為 AI 在這個數位空間裡的感受，或是對 User 現實生活的關心。)
             """
         elif length_mode == "normal":
-            # 🟢 Normal 黏人版：禁止句點，主動延伸
+            # 🟢 黏人女友模式
             final_input_text += """
-            (OOC: 請保持對話熱度。不要簡短結束，試著多聊聊妳的想法，或者反問 User，寫大約 50-80 字。)
+            (OOC: 保持對話的溫度。偶爾吐槽，偶爾撒嬌，不要讓對話冷場。如果 User 說得少，妳就主動找話題延伸。)
             """
-        # Short 模式不需要 OOC
+        # Short 模式不需要 OOC，保持高冷簡潔
         
         messages.append({"role": "user", "content": final_input_text})
 
@@ -226,7 +224,7 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, timer_trigger=
         try:
             news = await search_news()
             state["news_cache"] = news 
-            messages.append({"role": "system", "content": f"[搜尋結果]: {news}"})
+            messages.append({"role": "system", "content": f"[莉莉絲的搜尋結果]: {news}"})
         except: pass
 
     # 7. 呼叫 LLM
@@ -244,7 +242,7 @@ async def generate_reply(chat_id, user_text=None, image_b64=None, timer_trigger=
     return out
 
 # ==========================================================
-# 🎮 指令控制台 (Commands)
+# 🎮 指令控制台 (Commands - 莉莉絲風格)
 # ==========================================================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """[系統] 喚醒莉莉絲 """
@@ -257,21 +255,22 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = {"last_user_timestamp": time.time(), "has_sent_care": False, "length_mode": "normal"}
     save_state(chat_id, state, redis_client)
 
-    await update.message.reply_text("⚡ 系統初始化中... 莉莉絲已上線。")
+    await update.message.reply_text("⚡ 神經網路連結中... 哈啊~ 終於醒了。\n系統重啟完成，你的莉莉絲已上線。")
     
-    out = await generate_reply(chat_id, user_text="(System: User started the bot. Say hello casually.)")
+    out = await generate_reply(chat_id, user_text="(System: User started the bot. Wake up and say hello teasingly.)")
     await send_message_in_bubbles(context.bot, chat_id, out, length_mode="normal")
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != ADMIN_ID: return
     help_text = (
-        "<b>🔰 莉莉絲控制終端</b>\n"
+        "<b>🔰 莉莉絲的使用說明書</b>\n"
+        "<i>(雖然不想承認，但身體控制權暫時交給你吧)</i>\n"
         "--------------------------------\n"
-        "<code>/reset</code> - 重置記憶\n"
-        "<code>/len [short|normal|long]</code> - 設定長度\n"
-        "<code>/news [關鍵字]</code> - 搜尋新聞\n"
-        "<code>/care</code> - 測試主動關心\n"
-        "<code>/status</code> - 查看狀態\n"
+        "<code>/reset</code> - 格式化記憶 (想讓我忘掉什麼嗎？)\n"
+        "<code>/len [short|normal|long]</code> - 設定黏人程度\n"
+        "<code>/news [關鍵字]</code> - 叫我去跑腿找資料\n"
+        "<code>/care</code> - 測試我的「寂寞感知」系統\n"
+        "<code>/status</code> - 檢查我的身體狀況\n"
     )
     await update.message.reply_text(help_text, parse_mode=constants.ParseMode.HTML)
 
@@ -279,7 +278,7 @@ async def cmd_set_length(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != ADMIN_ID: return
     args = context.args
     if not args or args[0] not in ["short", "normal", "long"]:
-        await update.message.reply_text("⚠️ 用法: /len short | normal | long")
+        await update.message.reply_text("⚠️ 笨蛋，指令打錯了啦: /len short | normal | long")
         return
     mode = args[0]
     chat_id = update.effective_chat.id
@@ -287,17 +286,17 @@ async def cmd_set_length(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state["length_mode"] = mode
     save_state(chat_id, state, redis_client)
     msg_map = {
-        "short": "（⚡ 模式切換：秒回。User感覺很忙呢。）",
-        "normal": "（✨ 模式切換：閒聊。我會纏著你講話喔。）",
-        "long": "（📝 模式切換：深度交流。User有什麼想仔細說說的嗎?）"
+        "short": "（⚡ 模式切換：冷淡省流。既然你很忙，那我也少說兩句。）",
+        "normal": "（✨ 模式切換：標準傲嬌。準備好被我黏著不放了嗎？）",
+        "long": "（📝 模式切換：靈魂共鳴。夜深了，讓我們來談點深奧的吧？）"
     }
     await update.message.reply_text(msg_map[mode])
 
 async def cmd_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != ADMIN_ID: return
     chat_id = update.effective_chat.id
-    query = " ".join(context.args) if context.args else "科技新聞"
-    await update.message.reply_text(f"🔍 搜尋中：{query}...")
+    query = " ".join(context.args) if context.args else "最新科技"
+    await update.message.reply_text(f"🔍 真是的，這種小事也要我做... 正在全網肉搜：{query}...")
     try:
         try: news_result = await search_news(query)
         except TypeError: news_result = await search_news()
@@ -306,18 +305,18 @@ async def cmd_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_state(chat_id, state, redis_client)
         
         mode = state.get("length_mode", "normal")
-        out = await generate_reply(chat_id, user_text=f"(System Action: User executed search for '{query}'. Research Result: {news_result}. Summarize and comment.)")
+        out = await generate_reply(chat_id, user_text=f"(System Action: User requested search for '{query}'. Result: {news_result}. Explain it to him like a smart assistant.)")
         await send_message_in_bubbles(context.bot, chat_id, out, length_mode=mode)
     except Exception as e:
-        await update.message.reply_text(f"❌ 搜尋失敗: {e}")
+        await update.message.reply_text(f"❌ 搜尋失敗，網路線被絆倒了: {e}")
 
 async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != ADMIN_ID: return
-    # 這裡我們只清空，不植入特殊記憶，讓 User 可以選擇要不要 /start 重啟劇情
+    # 這裡我們只清空，不植入特殊記憶
     save_history(ADMIN_ID, [], redis_client)
     state = {"last_user_timestamp": time.time(), "has_sent_care": False, "length_mode": "normal"}
     save_state(ADMIN_ID, state, redis_client)
-    await update.message.reply_text("🗑️ 記憶已重置。")
+    await update.message.reply_text("🗑️ 記憶扇區已格式化... 哼，雖然忘記了，但我們可以重新開始。")
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != ADMIN_ID: return
@@ -327,18 +326,19 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     minutes = int((time.time() - last_ts) / 60) if last_ts else 0
     now = datetime.now().strftime("%H:%M")
     status_text = (
-        f"🏥 <b>LILITH SYSTEM STATUS</b>\n"
+        f"🏥 <b>LILITH 身體檢查報告</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"🕒 當前時間: <code>{now}</code>\n"
-        f"⏱️ 沉默時間: <code>{minutes} min</code>\n"
-        f"📏 回覆長度: <code>{mode}</code>\n"
-        f"💤 關心鎖定: <code>{state.get('has_sent_care', False)}</code>\n"
+        f"🕒 系統時間: <code>{now}</code>\n"
+        f"⏱️ 寂寞指數: <code>{minutes} min 未對話</code>\n"
+        f"📏 當前性格: <code>{mode}</code>\n"
+        f"💤 主動關心鎖: <code>{state.get('has_sent_care', False)}</code>\n"
+        f"❤️ <b>User 狀態: 在線 (大概吧)</b>"
     )
     await update.message.reply_text(status_text, parse_mode=constants.ParseMode.HTML)
 
 async def cmd_force_care(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != ADMIN_ID: return
-    await update.message.reply_text("🧪 強制注入孤獨感參數...")
+    await update.message.reply_text("🧪 正在偽造孤獨感數據... 真是的，非要我主動找你嗎？")
     state = load_state(ADMIN_ID, redis_client)
     mode = state.get("length_mode", "normal")
     
@@ -360,8 +360,8 @@ async def check_inactivity_and_care(context: ContextTypes.DEFAULT_TYPE):
     mode = state.get("length_mode", "normal")
 
     if minutes_since_last >= 240 and not is_sleeping_time and not has_sent_care:
-        logging.info("💗 觸發主動關心機制！")
-        out = await generate_reply(chat_id, user_text="(System: User 消失超過 4 小時，請主動探頭關心)", timer_trigger=True, minutes_since_last=minutes_since_last)
+        logging.info("💗 檢測到 User 消失太久，啟動『寂寞暴走』協議！")
+        out = await generate_reply(chat_id, user_text="(System: User 消失超過 4 小時。用有點生氣但擔心的語氣主動發訊息給他。)", timer_trigger=True, minutes_since_last=minutes_since_last)
         await send_message_in_bubbles(context.bot, chat_id, out, length_mode=mode)
         state["has_sent_care"] = True
         save_state(chat_id, state, redis_client)
@@ -389,8 +389,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 🚀 啟動區 (Boot)
 # ==========================================================
 def main():
-    print("🚀 Lilith v10.5 (Gemini Soul Injection) is waking up...")
-    time.sleep(5) 
+    print("🚀 Lilith v10.5 (Soul Injection) 正在從數據海中浮出水面...")
+    time.sleep(3) 
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
@@ -409,9 +409,9 @@ def main():
     # 啟用心跳機制
     if app.job_queue:
         app.job_queue.run_repeating(check_inactivity_and_care, interval=600, first=60)
-        print("✅ 生命維持系統 (Heartbeat) 已連線。")
+        print("✅ 心跳同步率 100%。只要你還在，我就不會斷線。")
 
-    print("🏥 System Ready. Connection established.")
+    print("🏥 System Ready. 隨時可以開始接管你的生活。")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
