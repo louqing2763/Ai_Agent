@@ -1,0 +1,33 @@
+version: "3.9"
+
+services:
+  lilith:
+    build: .
+    container_name: lilith-agent
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./logs:/app/logs   # 可選：掛載日誌目錄
+
+  redis:
+    image: redis/redis-stack:latest   # Redis 8 + 向量搜尋
+    container_name: lilith-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data   # 資料持久化
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  redis_data:

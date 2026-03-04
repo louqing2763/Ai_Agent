@@ -1,8 +1,20 @@
+# Telegram
 python-telegram-bot[job-queue]>=21.0
-openai>=1.12.0
-duckduckgo-search>=4.3.0
+
+# Web
+fastapi>=0.110.0
+uvicorn>=0.29.0
+
+# LLM / API
 requests>=2.31.0
-pytz
+aiohttp>=3.9.0
+
+# Redis
 redis>=5.0.0
-aiohttp
-ollama
+
+# 新聞備用引擎（可選）
+duckduckgo-search>=4.3.0
+feedparser>=6.0.0
+
+# 環境變數（本地開發用）
+python-dotenv>=1.0.0

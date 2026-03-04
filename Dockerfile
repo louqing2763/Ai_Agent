@@ -1,25 +1,20 @@
-FROM python:3.10-slim
+FROM python:3.11-slim
 
-# 讓印出的 log 可以即時看到（避免 Starting Container 卡住）
-ENV PYTHONUNBUFFERED=1
+# 時區
+ENV TZ=Asia/Taipei
+RUN apt-get update && apt-get install -y tzdata && \
+    ln -sf /usr/share/zoneinfo/Asia/Taipei /etc/localtime && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# 安裝必要依賴（適用 telegram-bot job_queue / aiohttp 等）
-RUN apt-get update && apt-get install -y \
-    libcurl4-openssl-dev \
-    libssl-dev \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
-
-# 先複製 requirements（Docker caching 比較好）
+# 依賴先裝（利用 Docker layer cache）
 COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# 安裝 Python 套件
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
-
-# 再複製程式碼
+# 複製程式碼
 COPY . .
+
+EXPOSE 8000
 
 CMD ["python", "main.py"]
