@@ -3,10 +3,11 @@ memory/long_term.py — Redis 向量長期記憶模組
 
 Redis 8 原生支援向量搜尋，不需要額外套件。
 使用 HNSW 索引 + cosine 相似度。
+Embedding 使用本地 sentence-transformers，完全免費，無需 API Key。
 
 流程：
   save(chat_id, role, content)
-    → 呼叫 DeepSeek embedding API 向量化
+    → sentence-transformers 向量化
     → 存入 Redis Hash + 向量索引
 
   recall(chat_id, query, top_k)
@@ -17,51 +18,48 @@ Redis 8 原生支援向量搜尋，不需要額外套件。
 
 import os
 import time
-import json
 import logging
 import hashlib
 import asyncio
 from typing import Optional
 
-import requests
-
 logger = logging.getLogger(__name__)
 
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
-EMBED_MODEL      = "text-embedding-3-small"   # DeepSeek 相容 OpenAI embedding API
-EMBED_DIM        = 1536
-INDEX_NAME       = "lilith_memory_idx"
-KEY_PREFIX       = "mem"
-MIN_RELEVANCE    = 0.75    # cosine 相似度門檻（0~1）
-MAX_RECALL       = 4       # 每次最多撷取幾條
-MIN_CONTENT_LEN  = 10      # 太短的訊息不值得存
+EMBED_DIM       = 384     # paraphrase-multilingual-MiniLM-L12-v2 的維度
+INDEX_NAME      = "lilith_memory_idx"
+KEY_PREFIX      = "mem"
+MIN_RELEVANCE   = 0.75
+MAX_RECALL      = 4
+MIN_CONTENT_LEN = 10
+
+# 模型單例（首次呼叫時載入，之後快取）
+_embed_model = None
+
+def _get_model():
+    global _embed_model
+    if _embed_model is None:
+        from sentence_transformers import SentenceTransformer
+        logger.info("[memory] 載入 embedding 模型中…")
+        _embed_model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
+        logger.info("[memory] embedding 模型載入完成")
+    return _embed_model
 
 
 # ----------------------------------------------------------
-# 🔢 Embedding（呼叫 DeepSeek / OpenAI 相容端點）
+# 🔢 Embedding（本地 sentence-transformers）
 # ----------------------------------------------------------
 def _embed(text: str) -> Optional[list]:
-    """
-    將文字向量化，回傳 float list。
-    DeepSeek 的 embedding API 與 OpenAI 相容。
-    """
+    """將文字向量化，回傳 float list。"""
     try:
-        res = requests.post(
-            "https://api.deepseek.com/v1/embeddings",
-            headers={
-                "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={"model": EMBED_MODEL, "input": text[:2000]},
-            timeout=10,
-        )
-        if res.status_code == 200:
-            return res.json()["data"][0]["embedding"]
-        logger.error(f"[memory] Embedding API 錯誤: {res.status_code} {res.text[:100]}")
-        return None
+        model  = _get_model()
+        vector = model.encode(text[:2000], normalize_embeddings=True).tolist()
+        return vector
     except Exception as e:
         logger.error(f"[memory] Embedding 失敗: {e}")
         return None
+
+
+
 
 
 # ----------------------------------------------------------
