@@ -12,6 +12,9 @@ aiohttp>=3.9.0
 # Redis
 redis>=5.0.0
 
+# 系統監控
+psutil>=5.9.0
+
 # 向量記憶 Embedding（本地，免費）
 sentence-transformers>=2.6.0
 
