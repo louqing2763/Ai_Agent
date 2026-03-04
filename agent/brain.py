@@ -51,6 +51,27 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "get_system_status",
+            "description": (
+                "查詢電腦系統狀態。"
+                "當 User 問電腦狀況、CPU、記憶體、磁碟、網路、或目前開著什麼程式時使用。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "detail": {
+                        "type": "string",
+                        "description": "查詢項目：all全部、cpu、memory、disk、network、processes目前程式",
+                        "enum": ["all", "cpu", "memory", "disk", "network", "processes"],
+                    }
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_weather",
             "description": (
                 "查詢天氣資訊。"
@@ -179,6 +200,12 @@ async def _execute_tool(fn_name: str, fn_args: dict) -> str:
             query  = fn_args.get("query", "")
             result = await search_news(query)
             return result or "沒有找到相關新聞。"
+
+        elif fn_name == "get_system_status":
+            from tools.system_monitor import get_system_status
+            detail = fn_args.get("detail", "all")
+            result = await get_system_status(detail)
+            return result or "系統狀態暫時無法取得。"
 
         elif fn_name == "get_weather":
             from tools.weather import get_weather
