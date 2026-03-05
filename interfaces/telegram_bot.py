@@ -60,6 +60,7 @@ async def generate_reply(
         news               = news_text,
         minutes_since_last = minutes_since_last,
         timer_trigger      = timer_trigger,
+        redis_client       = redis_client,
     )
 
     # 長期記憶注入 persona 尾端
