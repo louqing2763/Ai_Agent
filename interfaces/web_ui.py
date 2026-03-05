@@ -1,13 +1,12 @@
 """
-interfaces/web_ui.py — FastAPI Web UI v2.1
+interfaces/web_ui.py — FastAPI Web UI v3.0
 
-新增：
-  - 設定面板（模式切換、記憶狀態、清除記憶、強制關心）
-  - Persona 分區塊編輯（身分、性格、信念、禁忌、時段）
-  - POST /settings      — 儲存設定
-  - GET  /persona       — 取得目前 persona 區塊
-  - POST /persona       — 套用 persona 修改
-  - POST /persona/reset — 重設為原始版本
+B 方案：完整 Persona 模板覆寫
+  - 七個區塊完整控制 get_persona() 所有動態內容
+  - Redis key: lilith:persona_full_template
+  - GET  /persona       — 取得所有區塊
+  - POST /persona       — 套用完整覆寫
+  - POST /persona/reset — 清除覆寫，回到 persona_config.py 預設
 """
 
 import time
@@ -33,16 +32,18 @@ class SettingsRequest(BaseModel):
     length_mode: Optional[str] = None
 
 class PersonaBlock(BaseModel):
-    identity:    Optional[str] = None
-    personality: Optional[str] = None
-    beliefs:     Optional[str] = None
-    forbidden:   Optional[str] = None
-    time_rules:  Optional[str] = None
+    base_identity:  Optional[str] = None   # 核心身分
+    style_short:    Optional[str] = None   # 省流模式風格
+    style_normal:   Optional[str] = None   # 標準模式風格
+    style_long:     Optional[str] = None   # 深度模式風格
+    time_rules:     Optional[str] = None   # 時段規則
+    absence_rules:  Optional[str] = None   # User 消失後
+    news_rules:     Optional[str] = None   # 新聞注入規則
 
 # ----------------------------------------------------------
-# 🔑 Persona Redis Key
+# 🔑 Persona Redis Key（B 方案）
 # ----------------------------------------------------------
-PERSONA_KEY = "lilith:persona_overrides"
+PERSONA_KEY = "lilith:persona_full_template"
 
 def _load_persona_blocks(redis_client) -> dict:
     import json
@@ -64,30 +65,26 @@ def _save_persona_blocks(redis_client, blocks: dict):
         logger.error(f"[web_ui] persona 儲存失敗: {e}")
 
 def _get_default_blocks() -> dict:
-    """從 persona_config.py 切割出各區塊預設內容"""
+    """從 persona_config.py 讀取各區塊預設內容"""
     try:
-        from core.persona_config import BASE_IDENTITY
-        text = BASE_IDENTITY
-
-        def extract(start, end=None):
-            s = text.find(start)
-            if s == -1:
-                return ""
-            s += len(start)
-            if end:
-                e = text.find(end, s)
-                return text[s:e].strip() if e != -1 else text[s:].strip()
-            return text[s:].strip()
-
+        from core.persona_config import (
+            BASE_IDENTITY, STYLE_SHORT, STYLE_NORMAL, STYLE_LONG,
+            TIME_RULES, ABSENCE_RULES, NEWS_RULES,
+        )
         return {
-            "identity":    extract("## 核心身分 (Core Identity)\n", "---"),
-            "personality": extract("## 性格特質 (Personality Traits)\n", "---"),
-            "beliefs":     extract("## 核心信念 (Core Beliefs)\n", "---"),
-            "forbidden":   extract("## 語言禁忌 (What Lillith Never Does)\n", "---"),
-            "time_rules":  "（時段規則在 get_persona() 動態生成，可在此補充額外規則）",
+            "base_identity": BASE_IDENTITY.strip(),
+            "style_short":   STYLE_SHORT.strip(),
+            "style_normal":  STYLE_NORMAL.strip(),
+            "style_long":    STYLE_LONG.strip(),
+            "time_rules":    "\n".join(TIME_RULES.values()).strip(),
+            "absence_rules": "\n".join(ABSENCE_RULES.values()).strip(),
+            "news_rules":    NEWS_RULES.strip(),
         }
     except Exception:
-        return {k: "" for k in ["identity","personality","beliefs","forbidden","time_rules"]}
+        return {k: "" for k in [
+            "base_identity","style_short","style_normal",
+            "style_long","time_rules","absence_rules","news_rules"
+        ]}
 
 # ----------------------------------------------------------
 # 🏗️ App 工廠
@@ -339,11 +336,13 @@ footer{padding:10px 14px;background:#1a1a22;border-top:1px solid #2a2a35;display
   <div class="s-sec" style="flex:1">
     <div class="s-title">Persona 編輯</div>
     <div class="p-tabs">
-      <span class="ptab active" data-b="identity"    onclick="switchBlock('identity')">身分</span>
-      <span class="ptab"        data-b="personality" onclick="switchBlock('personality')">性格</span>
-      <span class="ptab"        data-b="beliefs"     onclick="switchBlock('beliefs')">信念</span>
-      <span class="ptab"        data-b="forbidden"   onclick="switchBlock('forbidden')">禁忌</span>
-      <span class="ptab"        data-b="time_rules"  onclick="switchBlock('time_rules')">時段</span>
+      <span class="ptab active" data-b="base_identity" onclick="switchBlock('base_identity')">身分</span>
+      <span class="ptab" data-b="style_short"   onclick="switchBlock('style_short')">省流</span>
+      <span class="ptab" data-b="style_normal"  onclick="switchBlock('style_normal')">標準</span>
+      <span class="ptab" data-b="style_long"    onclick="switchBlock('style_long')">深度</span>
+      <span class="ptab" data-b="time_rules"    onclick="switchBlock('time_rules')">時段</span>
+      <span class="ptab" data-b="absence_rules" onclick="switchBlock('absence_rules')">消失</span>
+      <span class="ptab" data-b="news_rules"    onclick="switchBlock('news_rules')">新聞</span>
     </div>
     <textarea class="p-editor" id="pEditor"></textarea>
     <div class="p-hint">修改後點「套用」，下一條訊息生效。</div>
@@ -375,7 +374,7 @@ footer{padding:10px 14px;background:#1a1a22;border-top:1px solid #2a2a35;display
 
 <script>
 let curMode  = 'normal';
-let curBlock = 'identity';
+let curBlock = 'base_identity';
 let pData    = {};
 
 // ── 狀態刷新 ──────────────────────────────────────────────
