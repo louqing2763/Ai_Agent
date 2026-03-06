@@ -247,7 +247,12 @@ def delete_all(redis_client, chat_id: int) -> int:
             "RETURN", "0",
             "LIMIT", "0", "1000",
         )
-        keys = results[1::2]   # 取奇數位置的 key
+        # FT.SEARCH 回傳格式：[總數, key1, [], key2, [], ...]
+        # key 在奇數位置（index 1, 3, 5...），fields 在偶數位置
+        total = results[0]
+        keys = results[1::2]   # key1, key2, ...（跳過 fields）
+        # 過濾掉非 bytes/str 的元素（fields 是 list，key 是 bytes）
+        keys = [k for k in keys if isinstance(k, (str, bytes))]
         if keys:
             redis_client.delete(*keys)
         return len(keys)
