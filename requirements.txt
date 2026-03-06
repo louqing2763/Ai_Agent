@@ -24,3 +24,7 @@ feedparser>=6.0.0
 
 # 環境變數（本地開發用）
 python-dotenv>=1.0.0
+
+# 測試
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
