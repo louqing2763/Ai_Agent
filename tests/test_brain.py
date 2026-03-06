@@ -224,6 +224,7 @@ class TestThink:
         assert reply == "今天台北天氣晴，28°C。"
         assert len(tool_log) == 1
         assert tool_log[0]["tool"] == "get_weather"
+        assert tool_log[0]["result"] == "晴天 28°C"
 
     @pytest.mark.asyncio
     async def test_tool_call_second_api_failure_returns_partial_error(self):
@@ -319,3 +320,4 @@ class TestThink:
 
         assert tool_log[0]["tool"] == "search_news"
         assert tool_log[0]["args"] == {"query": "台灣"}
+        assert tool_log[0]["result"] == "Top story"

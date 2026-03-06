@@ -94,15 +94,10 @@ async def generate_reply(
         tools_enabled = not timer_trigger,   # 主動關心時不用工具
     )
 
-    # 若工具呼叫更新了新聞快取，同步到 state
-    if any(t["tool"] == "search_news" for t in tool_log):
-        from core.news import search_news
-        # 取最後一次 search_news 的 query
-        news_queries = [t["args"].get("query", "") for t in tool_log if t["tool"] == "search_news"]
-        if news_queries:
-            fresh = await search_news(news_queries[-1])
-            if fresh:
-                state["news_cache"] = fresh
+    # 若工具呼叫更新了新聞快取，直接從 tool_log 的 result 取，不再重複呼叫 API
+    for t in tool_log:
+        if t["tool"] == "search_news" and t.get("result"):
+            state["news_cache"] = t["result"]
 
     # 更新短期記憶
     if user_text:
