@@ -121,7 +121,7 @@ async def think(
     payload = {
         "model":             "deepseek-chat",
         "messages":          messages,
-        "temperature":       1.5,
+        "temperature":       1.4,
         "max_tokens":        max_tokens,
         "presence_penalty":  0.6,
         "frequency_penalty": 0.2,
@@ -151,10 +151,11 @@ async def think(
         tc_id   = tc["id"]
 
         logger.info(f"[brain] 工具呼叫: {fn_name}({fn_args})")
-        tool_calls_log.append({"tool": fn_name, "args": fn_args})
 
         # 執行工具
         result = await _execute_tool(fn_name, fn_args)
+
+        tool_calls_log.append({"tool": fn_name, "args": fn_args, "result": result})
 
         tool_results.append({
             "role":         "tool",
