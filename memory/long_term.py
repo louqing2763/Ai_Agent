@@ -34,14 +34,18 @@ MIN_CONTENT_LEN = 10
 
 # 模型單例（首次呼叫時載入，之後快取）
 _embed_model = None
+_model_lock  = __import__("threading").Lock()
 
 def _get_model():
     global _embed_model
     if _embed_model is None:
-        from sentence_transformers import SentenceTransformer
-        logger.info("[memory] 載入 embedding 模型中…")
-        _embed_model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
-        logger.info("[memory] embedding 模型載入完成")
+        with _model_lock:
+            # double-check：進鎖後再確認一次，避免重複載入
+            if _embed_model is None:
+                from sentence_transformers import SentenceTransformer
+                logger.info("[memory] 載入 embedding 模型中…")
+                _embed_model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
+                logger.info("[memory] embedding 模型載入完成")
     return _embed_model
 
 
