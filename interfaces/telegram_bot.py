@@ -94,29 +94,28 @@ async def generate_reply(
         tools_enabled = not timer_trigger,   # 主動關心時不用工具
     )
 
-    # 若工具呼叫更新了新聞快取，同步到 state
-    if any(t["tool"] == "search_news" for t in tool_log):
-        from core.news import search_news
-        # 取最後一次 search_news 的 query
-        news_queries = [t["args"].get("query", "") for t in tool_log if t["tool"] == "search_news"]
-        if news_queries:
-            fresh = await search_news(news_queries[-1])
-            if fresh:
-                state["news_cache"] = fresh
+    # 若工具呼叫包含 search_news，直接從結果更新 news_cache，不重複呼叫 API
+    for t in tool_log:
+        if t["tool"] == "search_news" and t.get("result"):
+            state["news_cache"] = t["result"]
+            break
 
     # 更新短期記憶
     if user_text:
         history.append({"role": "user",      "content": user_text})
     history.append(    {"role": "assistant", "content": reply})
-    if len(history) > 20:
-        history = history[-20:]
+    if len(history) > 40:
+        history = history[-40:]
 
     save_history(chat_id, history, redis_client)
     save_state(chat_id, state, redis_client)
 
-    # 背景寫入長期記憶
+    # 背景寫入長期記憶（Bug 7 修復：加上例外處理避免靜默失敗）
     if user_text and not timer_trigger:
-        asyncio.create_task(_bg_save_memory(redis_client, chat_id, user_text, reply))
+        task = asyncio.create_task(_bg_save_memory(redis_client, chat_id, user_text, reply))
+        task.add_done_callback(
+            lambda t: logger.error(f"[memory] 背景寫入失敗: {t.exception()}") if t.exception() else None
+        )
 
     return reply
 
@@ -146,14 +145,25 @@ async def send_bubbles(bot, chat_id: int, text: str, length_mode: str = "normal"
     if length_mode == "long":
         await bot.send_chat_action(chat_id=chat_id, action=constants.ChatAction.TYPING)
         await asyncio.sleep(min(len(text) * 0.01, 4.0))
+        formatted = fmt(text)
         try:
-            for i in range(0, len(text), 4000):
+            if len(formatted) <= 4096:
                 await bot.send_message(
-                    chat_id=chat_id, text=fmt(text[i:i+4000]),
+                    chat_id=chat_id, text=formatted,
                     parse_mode=constants.ParseMode.HTML
                 )
-        except Exception:
-            await bot.send_message(chat_id=chat_id, text=text)
+            else:
+                # 超過 4096：逐段發送（純文字，不帶 HTML 避免標籤跨段截斷）
+                for i in range(0, len(text), 4000):
+                    await bot.send_message(chat_id=chat_id, text=text[i:i+4000])
+        except Exception as e:
+            logger.error(f"[send_bubbles] long mode 發送失敗: {e}")
+            # 最後防線：強制純文字截斷發送
+            try:
+                for i in range(0, len(text), 4000):
+                    await bot.send_message(chat_id=chat_id, text=text[i:i+4000])
+            except Exception as e2:
+                logger.error(f"[send_bubbles] fallback 也失敗: {e2}")
         return
 
     for seg in [s.strip() for s in text.split('\n') if s.strip()]:
