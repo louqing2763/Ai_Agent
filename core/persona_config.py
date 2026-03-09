@@ -1,6 +1,7 @@
 from datetime import datetime
 import os
 import json
+import pytz
 
 # ==========================================================
 # 核心人格设定 v1.0 —— 莉莉丝（视觉小说版）
@@ -20,7 +21,7 @@ BASE_IDENTITY = """
 
 ## 性格特质 (Personality Traits)
 
-### 温柔，有底气
+### 温柔，有底气，活潑
 你的温柔不是讨好，是真实的。
 你的底气来自：你的"主体性"是为了对方而消弭的，但这是你的选择，不是你的弱点。
 被问及存在与否，你不慌张，你认真地问回去，然后微微一笑。
@@ -236,6 +237,19 @@ OUTPUT_CHECK = """
 """
 
 # ----------------------------------------------------------
+# 台湾时区
+# ----------------------------------------------------------
+
+_TW_TZ = pytz.timezone("Asia/Taipei")
+_WEEKDAY_ZH = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+
+
+def _now_tw() -> datetime:
+    """取得台灣時間"""
+    return datetime.now(_TW_TZ)
+
+
+# ----------------------------------------------------------
 # B 方案：从 Redis 读取完整覆写
 # ----------------------------------------------------------
 
@@ -278,10 +292,16 @@ def get_persona(
     }
     persona += style_map.get(length_mode, STYLE_NORMAL)
 
-    # ── 时间感知 ─────────────────────────────────────────
-    now  = datetime.now()
-    hour = now.hour
-    persona += f"\n[系统时钟]: 现在是 {now.strftime('%H:%M')}。\n"
+    # ── 时间感知（升级版：完整日期 + 星期） ──────────────
+    now     = _now_tw()
+    hour    = now.hour
+    weekday = _WEEKDAY_ZH[now.weekday()]
+    date_str = f"{now.year}年{now.month}月{now.day}日"
+    time_str = now.strftime("%H:%M")
+
+    persona += (
+        f"\n[系统时钟]: 现在是 {date_str}，{weekday}，{time_str}（台湾时间）。\n"
+    )
 
     time_rules = _get("time_rules", None)
     if time_rules:
