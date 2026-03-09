@@ -31,6 +31,22 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "get_current_datetime",
+            "description": (
+                "查詢當前的台灣時間、日期和星期。"
+                "當 User 問『現在幾點』、『今天幾號』、『今天星期幾』、"
+                "『現在是什麼時候』、『幾點了』等問題時使用。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "search_news",
             "description": (
                 "搜尋最新新聞或網路資訊。"
@@ -196,7 +212,11 @@ async def think(
 async def _execute_tool(fn_name: str, fn_args: dict) -> str:
     """派發工具呼叫到對應模組"""
     try:
-        if fn_name == "search_news":
+        if fn_name == "get_current_datetime":
+            from tools.datetime_tool import handle_datetime_tool_call
+            return handle_datetime_tool_call()
+
+        elif fn_name == "search_news":
             from core.news import search_news
             query  = fn_args.get("query", "")
             result = await search_news(query)
