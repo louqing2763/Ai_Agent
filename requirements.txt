@@ -1,26 +1,21 @@
 # Telegram
 python-telegram-bot[job-queue]>=21.0
-
 # Web
 fastapi>=0.110.0
 uvicorn>=0.29.0
-
 # LLM / API
 requests>=2.31.0
 aiohttp>=3.9.0
-
 # Redis
 redis>=5.0.0
-
 # 系統監控
 psutil>=5.9.0
-
 # 向量記憶 Embedding（本地，免費）
 sentence-transformers>=2.6.0
-
 # 新聞備用引擎（可選）
 duckduckgo-search>=4.3.0
 feedparser>=6.0.0
-
 # 環境變數（本地開發用）
 python-dotenv>=1.0.0
+# 時區支援
+pytz>=2024.1
