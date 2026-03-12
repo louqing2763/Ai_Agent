@@ -389,6 +389,23 @@ def get_persona(
         elif minutes_since_last > 120:
             persona += ABSENCE_RULES["short_absence"]
 
+    # ── 更新感知 ─────────────────────────────────────────
+    if redis_client is not None:
+        try:
+            just_updated = redis_client.get("lilith:just_updated")
+            if just_updated:
+                changelog = redis_client.get("lilith:changelog")
+                if isinstance(changelog, bytes):
+                    changelog = changelog.decode()
+                if changelog:
+                    persona += (
+                        f"\n[系統提示]: 你剛才被更新了。"
+                        f"這次的變化是：{changelog}\n"
+                        f"你可以用自己的方式回應這件事，也可以不提。\n"
+                    )
+        except Exception:
+            pass
+
     # ── 新聞注入 ─────────────────────────────────────────
     if news:
         persona += _get("news_rules", NEWS_RULES)
