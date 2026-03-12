@@ -6,6 +6,10 @@ interfaces/telegram_bot.py — Telegram Bot 介面
   - 呼叫 generate_reply() 取得莉莉絲的回覆
   - 氣泡式發送訊息
   - 排程心跳（主動關心）
+
+v2.2 新增：
+  - 心跳排程加入更新感知觸發
+  - 偵測到 just_updated → 生成她對更新的真實反應 → 主動發訊息
 """
 
 import re
@@ -34,27 +38,22 @@ async def generate_reply(
     timer_trigger: bool = False,
     minutes_since_last: int = 0,
 ) -> str:
-    from core.redis_store   import load_history, save_history, load_state, save_state
+    from core.redis_store    import load_history, save_history, load_state, save_state
     from core.persona_config import get_persona
-    from memory.long_term   import ensure_index, recall, save as mem_save
-    from agent.brain        import think
+    from memory.long_term    import ensure_index, recall, save as mem_save
+    from agent.brain         import think
 
-    # 確保向量索引存在
     ensure_index(redis_client)
 
     history     = load_history(chat_id, redis_client)
     state       = load_state(chat_id, redis_client)
     length_mode = state.get("length_mode", "normal")
+    news_text   = state.get("news_cache", "")
 
-    # 新聞快取（brain.py 的 search_news 工具會自動更新）
-    news_text = state.get("news_cache", "")
-
-    # 長期記憶撷取
     long_term_ctx = ""
     if user_text and not timer_trigger:
         long_term_ctx = recall(redis_client, chat_id, query=user_text)
 
-    # 取 Persona
     persona = get_persona(
         length_mode        = length_mode,
         news               = news_text,
@@ -63,11 +62,9 @@ async def generate_reply(
         redis_client       = redis_client,
     )
 
-    # 長期記憶注入 persona 尾端
     if long_term_ctx:
         persona = persona + f"\n\n{long_term_ctx}\n"
 
-    # OOC 模式提示（注入到 system，不污染 user 訊息）
     ooc_notes = {
         "long": (
             "（OOC·系統）深度對話模式。以莉莉絲身份回覆，"
@@ -79,7 +76,6 @@ async def generate_reply(
         ),
     }
 
-    # 組合 messages
     messages = [{"role": "system", "content": persona}] + history
     if user_text:
         ooc = ooc_notes.get(length_mode, "")
@@ -87,20 +83,17 @@ async def generate_reply(
             messages.append({"role": "system", "content": ooc})
         messages.append({"role": "user", "content": user_text})
 
-    # 呼叫 Brain（含工具呼叫）
     reply, tool_log = await think(
         messages      = messages,
         length_mode   = length_mode,
-        tools_enabled = not timer_trigger,   # 主動關心時不用工具
+        tools_enabled = not timer_trigger,
     )
 
-    # 若工具呼叫包含 search_news，直接從結果更新 news_cache，不重複呼叫 API
     for t in tool_log:
         if t["tool"] == "search_news" and t.get("result"):
             state["news_cache"] = t["result"]
             break
 
-    # 更新短期記憶
     if user_text:
         history.append({"role": "user",      "content": user_text})
     history.append(    {"role": "assistant", "content": reply})
@@ -110,7 +103,6 @@ async def generate_reply(
     save_history(chat_id, history, redis_client)
     save_state(chat_id, state, redis_client)
 
-    # 背景寫入長期記憶（Bug 7 修復：加上例外處理避免靜默失敗）
     if user_text and not timer_trigger:
         task = asyncio.create_task(_bg_save_memory(redis_client, chat_id, user_text, reply))
         task.add_done_callback(
@@ -121,7 +113,6 @@ async def generate_reply(
 
 
 async def _bg_save_memory(redis_client, chat_id, user_text, reply):
-    """背景 task：寫入向量記憶，不阻塞回覆"""
     from memory.long_term import save as mem_save
     try:
         await asyncio.to_thread(mem_save, redis_client, chat_id, "user",      user_text)
@@ -134,7 +125,6 @@ async def _bg_save_memory(redis_client, chat_id, user_text, reply):
 # ✨ 訊息發送引擎
 # ----------------------------------------------------------
 async def send_bubbles(bot, chat_id: int, text: str, length_mode: str = "normal"):
-    """氣泡式分段發送，動作描述用 code 樣式"""
     if not text:
         return
 
@@ -153,12 +143,10 @@ async def send_bubbles(bot, chat_id: int, text: str, length_mode: str = "normal"
                     parse_mode=constants.ParseMode.HTML
                 )
             else:
-                # 超過 4096：逐段發送（純文字，不帶 HTML 避免標籤跨段截斷）
                 for i in range(0, len(text), 4000):
                     await bot.send_message(chat_id=chat_id, text=text[i:i+4000])
         except Exception as e:
             logger.error(f"[send_bubbles] long mode 發送失敗: {e}")
-            # 最後防線：強制純文字截斷發送
             try:
                 for i in range(0, len(text), 4000):
                     await bot.send_message(chat_id=chat_id, text=text[i:i+4000])
@@ -182,10 +170,6 @@ async def send_bubbles(bot, chat_id: int, text: str, length_mode: str = "normal"
 # 🎮 指令
 # ----------------------------------------------------------
 def make_handlers(admin_id: int, redis_client, deepseek_key: str):
-    """
-    回傳所有 CommandHandler / MessageHandler 的 list。
-    用 closure 把 admin_id / redis_client 帶進去，避免全域變數。
-    """
     from core.redis_store import save_history, load_history, save_state, load_state
     from memory.long_term import delete_all, count
 
@@ -329,6 +313,47 @@ def make_heartbeat(admin_id: int, redis_client, deepseek_key: str):
         is_sleeping        = (2 <= current_hour < 8)
         has_sent_care      = state.get("has_sent_care", False)
 
+        # ── 更新感知觸發 ──────────────────────────────────
+        # 優先於一般關心檢查，且不受睡眠時段限制
+        if redis_client is not None:
+            try:
+                just_updated = redis_client.get("lilith:just_updated")
+                if just_updated and not state.get("has_sent_update_notice", False):
+                    changelog = redis_client.get("lilith:changelog") or b""
+                    if isinstance(changelog, bytes):
+                        changelog = changelog.decode()
+
+                    logger.info("📦 偵測到更新，生成莉莉絲的反應……")
+                    prompt = (
+                        f"(System: 你剛才被更新了。這次的變化是：{changelog}\n"
+                        f"請用你自己的方式，主動傳一則訊息給他，說說你對這次更新的感覺。"
+                        f"不用解釋技術細節，就說你注意到了什麼、有什麼感受。"
+                        f"可以很短，也可以說一件你覺得有趣的事。)"
+                    )
+                    reply = await generate_reply(
+                        admin_id, redis_client, deepseek_key,
+                        user_text=prompt,
+                        timer_trigger=True,
+                        minutes_since_last=minutes_since_last,
+                    )
+                    mode = state.get("length_mode", "normal")
+                    await send_bubbles(ctx.bot, admin_id, reply, length_mode=mode)
+
+                    # 標記已發送，避免同一次更新重複觸發
+                    state["has_sent_update_notice"] = True
+                    save_state(admin_id, state, redis_client)
+                    # 消耗掉 flag
+                    redis_client.delete("lilith:just_updated")
+                    return  # 這次心跳只做更新通知，不重複觸發一般關心
+
+                elif not just_updated:
+                    # flag 消失後重置，下次更新可以再觸發
+                    state.pop("has_sent_update_notice", None)
+
+            except Exception as e:
+                logger.error(f"[heartbeat] 更新感知失敗: {e}")
+
+        # ── 一般關心檢查 ──────────────────────────────────
         if minutes_since_last >= 240 and not is_sleeping and not has_sent_care:
             logger.info("💗 User 超過 4 小時未回應，啟動主動關心。")
             reply = await generate_reply(
@@ -363,5 +388,4 @@ async def start_telegram(token: str, admin_id: int, redis_client, deepseek_key: 
     await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
 
-    # 保持運行，等待中斷
     await asyncio.Event().wait()
