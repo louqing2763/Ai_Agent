@@ -374,6 +374,30 @@ def make_heartbeat(admin_id: int, redis_client, deepseek_key: str):
     return check_inactivity
 
 
+def make_mood_updater(admin_id: int, redis_client, deepseek_key: str):
+    """每天晚上 21:00 更新今日情緒"""
+    async def update_mood(ctx: ContextTypes.DEFAULT_TYPE):
+        from tools.mood_tracker import update_mood_today
+        logger.info("😶 開始更新今日情緒狀態……")
+        try:
+            await update_mood_today(redis_client, admin_id, deepseek_key)
+        except Exception as e:
+            logger.error(f"[mood] 定時更新失敗: {e}")
+    return update_mood
+
+
+def make_daily_summarizer(admin_id: int, redis_client, deepseek_key: str):
+    """每天凌晨 02:00 生成每日摘要並清短期記憶"""
+    async def daily_summary(ctx: ContextTypes.DEFAULT_TYPE):
+        from tools.mood_tracker import generate_daily_summary
+        logger.info("📓 開始生成每日摘要……")
+        try:
+            await generate_daily_summary(redis_client, admin_id, deepseek_key)
+        except Exception as e:
+            logger.error(f"[daily] 定時摘要失敗: {e}")
+    return daily_summary
+
+
 # ----------------------------------------------------------
 # 🚀 啟動入口（由 main.py 呼叫）
 # ----------------------------------------------------------
@@ -384,9 +408,20 @@ async def start_telegram(token: str, admin_id: int, redis_client, deepseek_key: 
         app.add_handler(handler)
 
     if app.job_queue:
+        from datetime import time as dt_time
+        import pytz
+        tz = pytz.timezone("Asia/Taipei")
+
         heartbeat = make_heartbeat(admin_id, redis_client, deepseek_key)
         app.job_queue.run_repeating(heartbeat, interval=600, first=60)
-        logger.info("✅ 心跳排程已啟動")
+
+        mood_updater = make_mood_updater(admin_id, redis_client, deepseek_key)
+        app.job_queue.run_daily(mood_updater, time=dt_time(21, 0, tzinfo=tz))
+
+        daily_summarizer = make_daily_summarizer(admin_id, redis_client, deepseek_key)
+        app.job_queue.run_daily(daily_summarizer, time=dt_time(2, 0, tzinfo=tz))
+
+        logger.info("✅ 心跳排程已啟動（含情緒更新 21:00、每日摘要 02:00）")
 
     await app.initialize()
     await app.start()
