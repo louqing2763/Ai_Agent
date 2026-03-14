@@ -10,18 +10,6 @@ interfaces/web_ui.py — FastAPI Web UI v4.0
 """
 
 import time
-import json"""
-interfaces/web_ui.py — FastAPI Web UI v4.0
-
-新增：
-  - 通話模式（雙向語音）
-    - /chat/stream  — SSE 串流回覆
-    - /tts/proxy    — 代理本機 GPT-SoVITS（可選，瀏覽器也能直連）
-  - VAD（語音活動偵測）+ 麥克風輸入 → Whisper STT
-  - 前端通話 UI：一鍵進入通話狀態，波形動畫，即時播放
-"""
-
-import time
 import json
 import logging
 import asyncio
