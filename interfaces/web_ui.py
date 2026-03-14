@@ -683,35 +683,77 @@ function stopCall() {
 }
 
 // ── VAD（語音活動偵測） ────────────────────────────────────
+// 人聲頻率範圍 bin 計算（在 AudioContext 建立後調用）
+let voiceBinStart = 0;
+let voiceBinEnd   = 0;
+let voiceOnsetTimer = null;    // 確認說話持續時間的計時器
+const VOICE_ONSET_MS = 300;    // 連續超過門檻 300ms 才算真的開始說話
+
+function calcVoiceBins() {
+  // 人聲頻率範圍：500Hz ~ 3000Hz
+  const sampleRate = audioContext.sampleRate;
+  const binCount   = analyser.frequencyBinCount;
+  const binSize    = sampleRate / (binCount * 2);
+  voiceBinStart = Math.floor(500  / binSize);
+  voiceBinEnd   = Math.floor(3000 / binSize);
+}
+
+function getVoiceVol(buf) {
+  // 只計算人聲頻率範圍的平均音量
+  let sum = 0;
+  const count = voiceBinEnd - voiceBinStart;
+  for (let i = voiceBinStart; i < voiceBinEnd; i++) {
+    sum += buf[i];
+  }
+  return count > 0 ? sum / count : 0;
+}
+
 function startVAD() {
   if (!analyser || !isCallActive) return;
+  calcVoiceBins();
   const buf = new Uint8Array(analyser.frequencyBinCount);
 
   function loop() {
     if (!isCallActive) return;
     analyser.getByteFrequencyData(buf);
-    const vol = buf.reduce((a,b) => a+b, 0) / buf.length;
+    const vol = getVoiceVol(buf);  // 只看人聲頻段
 
     // 更新波形視覺
     updateWaveBars(buf);
 
     if (!isSpeaking) {
       if (vol > VOICE_THRESH && !vadActive) {
-        // 偵測到說話開始
-        vadActive = true;
-        startRecording();
-        setCallStatus('聆聽中…');
-        setWaveState('listening');
-        if (silenceTimer) clearTimeout(silenceTimer);
-      } else if (vol <= VOICE_THRESH && vadActive) {
-        // 靜音開始計時
-        if (!silenceTimer) {
-          silenceTimer = setTimeout(() => {
-            if (vadActive) {
-              vadActive = false;
-              stopRecordingAndSend();
+        // 先計時，確認說話持續 300ms 以上才算
+        if (!voiceOnsetTimer) {
+          voiceOnsetTimer = setTimeout(() => {
+            voiceOnsetTimer = null;
+            // 再確認一次音量還在
+            analyser.getByteFrequencyData(buf);
+            if (getVoiceVol(buf) > VOICE_THRESH) {
+              vadActive = true;
+              startRecording();
+              setCallStatus('聆聽中…');
+              setWaveState('listening');
+              if (silenceTimer) clearTimeout(silenceTimer);
             }
-          }, SILENCE_MS);
+          }, VOICE_ONSET_MS);
+        }
+      } else if (vol <= VOICE_THRESH) {
+        // 音量低：清除 onset 計時
+        if (voiceOnsetTimer) {
+          clearTimeout(voiceOnsetTimer);
+          voiceOnsetTimer = null;
+        }
+        if (vadActive) {
+          // 靜音開始計時
+          if (!silenceTimer) {
+            silenceTimer = setTimeout(() => {
+              if (vadActive) {
+                vadActive = false;
+                stopRecordingAndSend();
+              }
+            }, SILENCE_MS);
+          }
         }
       } else if (vol > VOICE_THRESH && vadActive && silenceTimer) {
         // 靜音中斷，繼續說話
