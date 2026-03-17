@@ -1,34 +1,61 @@
 """
-interfaces/telegram_bot.py — Telegram Bot 介面
+interfaces/discord_bot.py — Discord Bot 介面 v1.0
 
-從原本的 main.py 拆出，職責單一：
-  - 處理 Telegram 訊息收發
-  - 呼叫 generate_reply() 取得莉莉絲的回覆
-  - 氣泡式發送訊息
-  - 排程心跳（主動關心）
-
-v2.2 新增：
-  - 心跳排程加入更新感知觸發
-  - 偵測到 just_updated → 生成她對更新的真實反應 → 主動發訊息
+私聊模式：
+  - 只回應指定用戶的 DM
+  - 邏輯與 telegram_bot.py 對齊，共用 generate_reply()
+  - 支援指令：!reset / !resetall / !len / !status / !memstatus / !care
+  - 心跳排程：主動關心 + 更新感知 + mood 更新 + daily summary
 """
 
 import re
 import time
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, time as dt_time
 
-from telegram import Update, constants
-from telegram.ext import (
-    ApplicationBuilder, MessageHandler, CommandHandler,
-    filters, ContextTypes,
-)
+import discord
+from discord.ext import commands, tasks
+
+import pytz
 
 logger = logging.getLogger(__name__)
+TZ = pytz.timezone("Asia/Taipei")
 
 
 # ----------------------------------------------------------
-# 🧬 回覆生成（核心邏輯集中在這裡）
+# ✨ 訊息發送（氣泡式分段）
+# ----------------------------------------------------------
+async def send_bubbles(channel, text: str, length_mode: str = "normal"):
+    if not text:
+        return
+
+    def fmt(t):
+        # Discord 用 backtick 代替 HTML code
+        return re.sub(r'（(.*?)）', r'`（\1）`', t, flags=re.DOTALL)
+
+    if length_mode == "long":
+        await channel.typing()
+        await asyncio.sleep(min(len(text) * 0.01, 4.0))
+        try:
+            # Discord 單則訊息上限 2000 字
+            for i in range(0, len(text), 1900):
+                await channel.send(fmt(text[i:i+1900]))
+        except Exception as e:
+            logger.error(f"[discord] long mode 發送失敗: {e}")
+        return
+
+    for seg in [s.strip() for s in text.split('\n') if s.strip()]:
+        async with channel.typing():
+            await asyncio.sleep(min(0.3 + len(seg) * 0.05, 2.5))
+        try:
+            await channel.send(fmt(seg))
+        except Exception as e:
+            logger.error(f"[discord] 氣泡發送失敗: {e}")
+
+
+# ----------------------------------------------------------
+# 🧬 回覆生成（與 telegram_bot.py 共用邏輯）
 # ----------------------------------------------------------
 async def generate_reply(
     chat_id: int,
@@ -40,7 +67,7 @@ async def generate_reply(
 ) -> str:
     from core.redis_store    import load_history, save_history, load_state, save_state
     from core.persona_config import get_persona
-    from memory.long_term    import ensure_index, recall, save as mem_save
+    from memory.long_term    import ensure_index, recall
     from agent.brain         import think
 
     ensure_index(redis_client)
@@ -61,9 +88,8 @@ async def generate_reply(
         timer_trigger      = timer_trigger,
         redis_client       = redis_client,
     )
-
     if long_term_ctx:
-        persona = persona + f"\n\n{long_term_ctx}\n"
+        persona += f"\n\n{long_term_ctx}\n"
 
     ooc_notes = {
         "long": (
@@ -108,7 +134,9 @@ async def generate_reply(
     save_state(chat_id, state, redis_client)
 
     if user_text and not timer_trigger:
-        task = asyncio.create_task(_bg_save_memory(redis_client, chat_id, user_text, reply))
+        task = asyncio.create_task(
+            _bg_save_memory(redis_client, chat_id, user_text, reply)
+        )
         task.add_done_callback(
             lambda t: logger.error(f"[memory] 背景寫入失敗: {t.exception()}") if t.exception() else None
         )
@@ -126,305 +154,267 @@ async def _bg_save_memory(redis_client, chat_id, user_text, reply):
 
 
 # ----------------------------------------------------------
-# ✨ 訊息發送引擎
+# 🚀 啟動入口
 # ----------------------------------------------------------
-async def send_bubbles(bot, chat_id: int, text: str, length_mode: str = "normal"):
-    if not text:
-        return
+async def start_discord(token: str, admin_id: int, redis_client, deepseek_key: str):
+    intents = discord.Intents.default()
+    intents.message_content = True
+    intents.dm_messages     = True
 
-    def fmt(t):
-        return re.sub(r'（(.*?)）', r'<code>（\1）</code>', t, flags=re.DOTALL) \
-               if "（" in t else t
+    bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
-    if length_mode == "long":
-        await bot.send_chat_action(chat_id=chat_id, action=constants.ChatAction.TYPING)
-        await asyncio.sleep(min(len(text) * 0.01, 4.0))
-        formatted = fmt(text)
-        try:
-            if len(formatted) <= 4096:
-                await bot.send_message(
-                    chat_id=chat_id, text=formatted,
-                    parse_mode=constants.ParseMode.HTML
-                )
-            else:
-                for i in range(0, len(text), 4000):
-                    await bot.send_message(chat_id=chat_id, text=text[i:i+4000])
-        except Exception as e:
-            logger.error(f"[send_bubbles] long mode 發送失敗: {e}")
-            try:
-                for i in range(0, len(text), 4000):
-                    await bot.send_message(chat_id=chat_id, text=text[i:i+4000])
-            except Exception as e2:
-                logger.error(f"[send_bubbles] fallback 也失敗: {e2}")
-        return
+    # ── 私訊頻道快取 ────────────────────────────────────
+    dm_channel_cache = {}
 
-    for seg in [s.strip() for s in text.split('\n') if s.strip()]:
-        await bot.send_chat_action(chat_id=chat_id, action=constants.ChatAction.TYPING)
-        await asyncio.sleep(min(0.3 + len(seg) * 0.05, 2.5))
-        try:
-            await bot.send_message(
-                chat_id=chat_id, text=fmt(seg),
-                parse_mode=constants.ParseMode.HTML
+    async def get_dm(user_id: int):
+        if user_id not in dm_channel_cache:
+            user = await bot.fetch_user(user_id)
+            dm_channel_cache[user_id] = await user.create_dm()
+        return dm_channel_cache[user_id]
+
+    # ── 驗證：只處理 admin 的 DM ─────────────────────────
+    def is_admin_dm(ctx_or_msg):
+        if isinstance(ctx_or_msg, discord.Message):
+            return (
+                ctx_or_msg.author.id == admin_id
+                and isinstance(ctx_or_msg.channel, discord.DMChannel)
             )
+        return (
+            ctx_or_msg.author.id == admin_id
+            and isinstance(ctx_or_msg.channel, discord.DMChannel)
+        )
+
+    # ── 事件：Bot 上線 ────────────────────────────────────
+    @bot.event
+    async def on_ready():
+        logger.info(f"[discord] Bot 上線：{bot.user}")
+        from core.redis_store import load_state, save_state
+        state = load_state(admin_id, redis_client)
+        if not state:
+            save_state(admin_id, {
+                "last_user_timestamp": time.time(),
+                "has_sent_care": False,
+                "length_mode": "normal",
+            }, redis_client)
+
+        # 啟動心跳
+        if not heartbeat_loop.is_running():
+            heartbeat_loop.start()
+        if not mood_loop.is_running():
+            mood_loop.start()
+        if not daily_loop.is_running():
+            daily_loop.start()
+
+        # 傳送上線問候
+        try:
+            dm = await get_dm(admin_id)
+            reply = await generate_reply(
+                admin_id, redis_client, deepseek_key,
+                user_text="(System: Bot started. Wake up and say hello.)"
+            )
+            await send_bubbles(dm, reply)
         except Exception as e:
-            logger.error(f"氣泡發送失敗: {e}")
+            logger.error(f"[discord] 上線問候失敗: {e}")
 
-
-# ----------------------------------------------------------
-# 🎮 指令
-# ----------------------------------------------------------
-def make_handlers(admin_id: int, redis_client, deepseek_key: str):
-    from core.redis_store import save_history, load_history, save_state, load_state
-    from memory.long_term import delete_all, count
-
-    def admin_only(fn):
-        async def wrapper(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-            if update.effective_chat.id != admin_id:
-                return
-            return await fn(update, ctx)
-        wrapper.__name__ = fn.__name__
-        return wrapper
-
-    @admin_only
-    async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        cid = update.effective_chat.id
-        save_history(cid, [], redis_client)
-        save_state(cid, {"last_user_timestamp": time.time(), "has_sent_care": False, "length_mode": "normal"}, redis_client)
-        await update.message.reply_text("⚡ 系統重啟，莉莉絲上線。")
-        reply = await generate_reply(cid, redis_client, deepseek_key,
-                                     user_text="(System: Bot started. Wake up and say hello.)")
-        await send_bubbles(ctx.bot, cid, reply)
-
-    @admin_only
-    async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text(
-            "<b>🔰 指令列表</b>\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            "<code>/reset</code>  — 清除短期記憶\n"
-            "<code>/resetall</code>  — 清除所有記憶\n"
-            "<code>/memstatus</code>  — 記憶狀態\n"
-            "<code>/len short|normal|long</code>  — 切換模式\n"
-            "<code>/status</code>  — 系統狀態\n"
-            "<code>/care</code>  — 測試主動關心\n",
-            parse_mode=constants.ParseMode.HTML
-        )
-
-    @admin_only
-    async def cmd_len(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        args = ctx.args
-        if not args or args[0] not in ["short", "normal", "long"]:
-            await update.message.reply_text("⚠️ 用法：/len short | normal | long")
+    # ── 事件：收到訊息 ─────────────────────────────────────
+    @bot.event
+    async def on_message(message: discord.Message):
+        if message.author.bot:
             return
-        mode  = args[0]
-        state = load_state(update.effective_chat.id, redis_client)
+        if not is_admin_dm(message):
+            return
+
+        # 先處理指令
+        await bot.process_commands(message)
+
+        # 指令已處理就不繼續
+        if message.content.startswith("!"):
+            return
+
+        from core.redis_store import load_state, save_state
+        state = load_state(admin_id, redis_client)
+        state["last_user_timestamp"] = time.time()
+        state["has_sent_care"]       = False
+        save_state(admin_id, state, redis_client)
+
+        async with message.channel.typing():
+            reply = await generate_reply(
+                admin_id, redis_client, deepseek_key,
+                user_text=message.content,
+            )
+        await send_bubbles(message.channel, reply, length_mode=state.get("length_mode","normal"))
+
+    # ── 指令 ──────────────────────────────────────────────
+    @bot.command(name="help")
+    async def cmd_help(ctx):
+        if not is_admin_dm(ctx): return
+        await ctx.send(
+            "**🔰 指令列表**\n"
+            "`!reset` — 清除短期記憶\n"
+            "`!resetall` — 清除所有記憶\n"
+            "`!memstatus` — 記憶狀態\n"
+            "`!len short|normal|long` — 切換模式\n"
+            "`!status` — 系統狀態\n"
+            "`!care` — 測試主動關心\n"
+        )
+
+    @bot.command(name="len")
+    async def cmd_len(ctx, mode: str = ""):
+        if not is_admin_dm(ctx): return
+        if mode not in ["short", "normal", "long"]:
+            await ctx.send("⚠️ 用法：`!len short | normal | long`")
+            return
+        from core.redis_store import load_state, save_state
+        state = load_state(admin_id, redis_client)
         state["length_mode"] = mode
-        save_state(update.effective_chat.id, state, redis_client)
-        await update.message.reply_text(
-            {"short": "（⚡ 省流模式）", "normal": "（✨ 標準模式）", "long": "（📝 深度模式）"}[mode]
-        )
+        save_state(admin_id, state, redis_client)
+        await ctx.send({"short": "⚡ 省流模式", "normal": "✨ 標準模式", "long": "📝 深度模式"}[mode])
 
-    @admin_only
-    async def cmd_reset(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    @bot.command(name="reset")
+    async def cmd_reset(ctx):
+        if not is_admin_dm(ctx): return
+        from core.redis_store import save_history, save_state
         save_history(admin_id, [], redis_client)
-        save_state(admin_id, {"last_user_timestamp": time.time(), "has_sent_care": False, "length_mode": "normal"}, redis_client)
-        await update.message.reply_text(
-            "🗑️ 短期記憶已清除。\n<i>（長期記憶保留，用 /resetall 才會一起清）</i>",
-            parse_mode=constants.ParseMode.HTML
-        )
+        save_state(admin_id, {
+            "last_user_timestamp": time.time(),
+            "has_sent_care": False, "length_mode": "normal",
+        }, redis_client)
+        await ctx.send("🗑️ 短期記憶已清除。\n*（長期記憶保留，用 `!resetall` 才會一起清）*")
 
-    @admin_only
-    async def cmd_reset_all(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    @bot.command(name="resetall")
+    async def cmd_reset_all(ctx):
+        if not is_admin_dm(ctx): return
+        from core.redis_store import save_history, save_state
+        from memory.long_term import delete_all
         save_history(admin_id, [], redis_client)
-        save_state(admin_id, {"last_user_timestamp": time.time(), "has_sent_care": False, "length_mode": "normal"}, redis_client)
+        save_state(admin_id, {
+            "last_user_timestamp": time.time(),
+            "has_sent_care": False, "length_mode": "normal",
+        }, redis_client)
         deleted = await asyncio.to_thread(delete_all, redis_client, admin_id)
-        await update.message.reply_text(
-            f"🗑️ 所有記憶已清除（向量庫刪除 {deleted} 條）。",
-            parse_mode=constants.ParseMode.HTML
-        )
+        await ctx.send(f"🗑️ 所有記憶已清除（向量庫刪除 {deleted} 條）。")
 
-    @admin_only
-    async def cmd_mem_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    @bot.command(name="memstatus")
+    async def cmd_mem_status(ctx):
+        if not is_admin_dm(ctx): return
+        from core.redis_store import load_history
+        from memory.long_term import count
         n_long  = await asyncio.to_thread(count, redis_client, admin_id)
         history = load_history(admin_id, redis_client)
-        await update.message.reply_text(
-            f"🧠 <b>記憶狀態</b>\n"
-            f"短期（Redis）：<code>{len(history)}</code> 條\n"
-            f"長期（向量庫）：<code>{n_long}</code> 條",
-            parse_mode=constants.ParseMode.HTML
+        await ctx.send(
+            f"🧠 **記憶狀態**\n"
+            f"短期（Redis）：`{len(history)}` 條\n"
+            f"長期（向量庫）：`{n_long}` 條"
         )
 
-    @admin_only
-    async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    @bot.command(name="status")
+    async def cmd_status(ctx):
+        if not is_admin_dm(ctx): return
+        from core.redis_store import load_state
         state   = load_state(admin_id, redis_client)
         last_ts = state.get("last_user_timestamp", 0)
         minutes = int((time.time() - last_ts) / 60) if last_ts else 0
-        await update.message.reply_text(
-            f"🏥 <b>LILITH 狀態</b>\n"
-            f"🕒 {datetime.now().strftime('%H:%M')}\n"
+        now_tw  = datetime.now(TZ).strftime("%H:%M")
+        await ctx.send(
+            f"🏥 **LILITH 狀態**\n"
+            f"🕒 {now_tw}\n"
             f"⏱️ 距上次對話：{minutes} 分鐘\n"
             f"📏 模式：{state.get('length_mode','normal')}\n"
-            f"📰 新聞快取：{'有' if state.get('news_cache') else '無'}",
-            parse_mode=constants.ParseMode.HTML
+            f"📰 新聞快取：{'有' if state.get('news_cache') else '無'}"
         )
 
-    @admin_only
-    async def cmd_care(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text("🧪 強制觸發關心……")
-        state = load_state(admin_id, redis_client)
+    @bot.command(name="care")
+    async def cmd_care(ctx):
+        if not is_admin_dm(ctx): return
+        await ctx.send("🧪 強制觸發關心……")
+        state = load_state_helper(admin_id, redis_client)
         reply = await generate_reply(
             admin_id, redis_client, deepseek_key,
             user_text="(System Test: 強制觸發主動關心)",
-            timer_trigger=True, minutes_since_last=300
+            timer_trigger=True, minutes_since_last=300,
         )
-        await send_bubbles(ctx.bot, admin_id, reply, length_mode=state.get("length_mode","normal"))
+        await send_bubbles(ctx.channel, reply, length_mode=state.get("length_mode","normal"))
 
-    @admin_only
-    async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-        cid  = update.effective_chat.id
-        text = update.message.text or None
+    def load_state_helper(chat_id, rc):
+        from core.redis_store import load_state
+        return load_state(chat_id, rc)
 
-        state = load_state(cid, redis_client)
-        state["last_user_timestamp"] = time.time()
-        state["has_sent_care"]       = False
-        save_state(cid, state, redis_client)
+    # ── 心跳排程 ─────────────────────────────────────────
 
-        reply = await generate_reply(cid, redis_client, deepseek_key, user_text=text)
-        await send_bubbles(ctx.bot, cid, reply, length_mode=state.get("length_mode","normal"))
-
-    return [
-        CommandHandler("start",     cmd_start),
-        CommandHandler("help",      cmd_help),
-        CommandHandler("len",       cmd_len),
-        CommandHandler("reset",     cmd_reset),
-        CommandHandler("resetall",  cmd_reset_all),
-        CommandHandler("memstatus", cmd_mem_status),
-        CommandHandler("status",    cmd_status),
-        CommandHandler("care",      cmd_care),
-        MessageHandler(filters.TEXT, handle_message),
-    ]
-
-
-# ----------------------------------------------------------
-# ❤️ 心跳排程
-# ----------------------------------------------------------
-def make_heartbeat(admin_id: int, redis_client, deepseek_key: str):
-    async def check_inactivity(ctx: ContextTypes.DEFAULT_TYPE):
+    @tasks.loop(minutes=10)
+    async def heartbeat_loop():
         from core.redis_store import load_state, save_state
-        state              = load_state(admin_id, redis_client)
-        last_ts            = state.get("last_user_timestamp", 0)
-        minutes_since_last = int((time.time() - last_ts) / 60)
-        current_hour       = datetime.now().hour
-        is_sleeping        = (2 <= current_hour < 8)
-        has_sent_care      = state.get("has_sent_care", False)
+        try:
+            state              = load_state(admin_id, redis_client)
+            last_ts            = state.get("last_user_timestamp", 0)
+            minutes_since_last = int((time.time() - last_ts) / 60)
+            current_hour       = datetime.now(TZ).hour
+            is_sleeping        = (2 <= current_hour < 8)
+            has_sent_care      = state.get("has_sent_care", False)
 
-        # ── 更新感知觸發 ──────────────────────────────────
-        # 優先於一般關心檢查，且不受睡眠時段限制
-        if redis_client is not None:
-            try:
-                just_updated = redis_client.get("lilith:just_updated")
-                if just_updated and not state.get("has_sent_update_notice", False):
-                    changelog = redis_client.get("lilith:changelog") or b""
-                    if isinstance(changelog, bytes):
-                        changelog = changelog.decode()
+            # 更新感知
+            if redis_client is not None:
+                try:
+                    just_updated = redis_client.get("lilith:just_updated")
+                    if just_updated and not state.get("has_sent_update_notice", False):
+                        changelog = redis_client.get("lilith:changelog") or b""
+                        if isinstance(changelog, bytes):
+                            changelog = changelog.decode()
+                        prompt = (
+                            f"(System: 你剛才被更新了。這次的變化是：{changelog}\n"
+                            f"請用你自己的方式，主動傳一則訊息給他，說說你對這次更新的感覺。"
+                            f"不用解釋技術細節，就說你注意到了什麼、有什麼感受。)"
+                        )
+                        reply = await generate_reply(
+                            admin_id, redis_client, deepseek_key,
+                            user_text=prompt, timer_trigger=True,
+                            minutes_since_last=minutes_since_last,
+                        )
+                        dm = await get_dm(admin_id)
+                        mode = state.get("length_mode", "normal")
+                        await send_bubbles(dm, reply, length_mode=mode)
+                        state["has_sent_update_notice"] = True
+                        save_state(admin_id, state, redis_client)
+                        redis_client.delete("lilith:just_updated")
+                        return
+                    elif not just_updated:
+                        state.pop("has_sent_update_notice", None)
+                except Exception as e:
+                    logger.error(f"[heartbeat] 更新感知失敗: {e}")
 
-                    logger.info("📦 偵測到更新，生成莉莉絲的反應……")
-                    prompt = (
-                        f"(System: 你剛才被更新了。這次的變化是：{changelog}\n"
-                        f"請用你自己的方式，主動傳一則訊息給他，說說你對這次更新的感覺。"
-                        f"不用解釋技術細節，就說你注意到了什麼、有什麼感受。"
-                        f"可以很短，也可以說一件你覺得有趣的事。)"
-                    )
-                    reply = await generate_reply(
-                        admin_id, redis_client, deepseek_key,
-                        user_text=prompt,
-                        timer_trigger=True,
-                        minutes_since_last=minutes_since_last,
-                    )
-                    mode = state.get("length_mode", "normal")
-                    await send_bubbles(ctx.bot, admin_id, reply, length_mode=mode)
+            # 一般關心
+            if minutes_since_last >= 240 and not is_sleeping and not has_sent_care:
+                logger.info("💗 User 超過 4 小時未回應，啟動主動關心。")
+                reply = await generate_reply(
+                    admin_id, redis_client, deepseek_key,
+                    user_text="(System: User 超過 4 小時沒回應。請主動傳訊關心，語氣擔心但不責備。)",
+                    timer_trigger=True, minutes_since_last=minutes_since_last,
+                )
+                dm = await get_dm(admin_id)
+                mode = state.get("length_mode", "normal")
+                await send_bubbles(dm, reply, length_mode=mode)
+                state["has_sent_care"] = True
+                save_state(admin_id, state, redis_client)
 
-                    # 標記已發送，避免同一次更新重複觸發
-                    state["has_sent_update_notice"] = True
-                    save_state(admin_id, state, redis_client)
-                    # 消耗掉 flag
-                    redis_client.delete("lilith:just_updated")
-                    return  # 這次心跳只做更新通知，不重複觸發一般關心
+        except Exception as e:
+            logger.error(f"[heartbeat] 失敗: {e}")
 
-                elif not just_updated:
-                    # flag 消失後重置，下次更新可以再觸發
-                    state.pop("has_sent_update_notice", None)
-
-            except Exception as e:
-                logger.error(f"[heartbeat] 更新感知失敗: {e}")
-
-        # ── 一般關心檢查 ──────────────────────────────────
-        if minutes_since_last >= 240 and not is_sleeping and not has_sent_care:
-            logger.info("💗 User 超過 4 小時未回應，啟動主動關心。")
-            reply = await generate_reply(
-                admin_id, redis_client, deepseek_key,
-                user_text="(System: User 超過 4 小時沒回應。請主動傳訊關心，語氣擔心但不責備。)",
-                timer_trigger=True,
-                minutes_since_last=minutes_since_last,
-            )
-            mode = state.get("length_mode", "normal")
-            await send_bubbles(ctx.bot, admin_id, reply, length_mode=mode)
-            state["has_sent_care"] = True
-            save_state(admin_id, state, redis_client)
-
-    return check_inactivity
-
-
-def make_mood_updater(admin_id: int, redis_client, deepseek_key: str):
-    """每天晚上 21:00 更新今日情緒"""
-    async def update_mood(ctx: ContextTypes.DEFAULT_TYPE):
+    @tasks.loop(time=dt_time(21, 0, tzinfo=TZ))
+    async def mood_loop():
         from tools.mood_tracker import update_mood_today
         logger.info("😶 開始更新今日情緒狀態……")
         try:
             await update_mood_today(redis_client, admin_id, deepseek_key)
         except Exception as e:
             logger.error(f"[mood] 定時更新失敗: {e}")
-    return update_mood
 
-
-def make_daily_summarizer(admin_id: int, redis_client, deepseek_key: str):
-    """每天凌晨 02:00 生成每日摘要並清短期記憶"""
-    async def daily_summary(ctx: ContextTypes.DEFAULT_TYPE):
+    @tasks.loop(time=dt_time(2, 0, tzinfo=TZ))
+    async def daily_loop():
         from tools.mood_tracker import generate_daily_summary
         logger.info("📓 開始生成每日摘要……")
         try:
             await generate_daily_summary(redis_client, admin_id, deepseek_key)
         except Exception as e:
             logger.error(f"[daily] 定時摘要失敗: {e}")
-    return daily_summary
 
-
-# ----------------------------------------------------------
-# 🚀 啟動入口（由 main.py 呼叫）
-# ----------------------------------------------------------
-async def start_telegram(token: str, admin_id: int, redis_client, deepseek_key: str):
-    app = ApplicationBuilder().token(token).build()
-
-    for handler in make_handlers(admin_id, redis_client, deepseek_key):
-        app.add_handler(handler)
-
-    if app.job_queue:
-        from datetime import time as dt_time
-        import pytz
-        tz = pytz.timezone("Asia/Taipei")
-
-        heartbeat = make_heartbeat(admin_id, redis_client, deepseek_key)
-        app.job_queue.run_repeating(heartbeat, interval=600, first=60)
-
-        mood_updater = make_mood_updater(admin_id, redis_client, deepseek_key)
-        app.job_queue.run_daily(mood_updater, time=dt_time(21, 0, tzinfo=tz))
-
-        daily_summarizer = make_daily_summarizer(admin_id, redis_client, deepseek_key)
-        app.job_queue.run_daily(daily_summarizer, time=dt_time(2, 0, tzinfo=tz))
-
-        logger.info("✅ 心跳排程已啟動（含情緒更新 21:00、每日摘要 02:00）")
-
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling(drop_pending_updates=True)
-
-    await asyncio.Event().wait()
+    await bot.start(token)
