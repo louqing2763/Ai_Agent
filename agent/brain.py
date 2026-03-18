@@ -98,7 +98,7 @@ async def think(
     payload = {
         "model":             "deepseek-chat",
         "messages":          messages,
-        "temperature":       1.4,
+        "temperature":       1.0,
         "max_tokens":        max_tokens,
         "presence_penalty":  0.6,
         "frequency_penalty": 0.2,
@@ -136,7 +136,7 @@ async def think(
     final_payload = {
         "model":             "deepseek-chat",
         "messages":          messages_with_results,
-        "temperature":       1.25,
+        "temperature":       0.95,
         "max_tokens":        max_tokens,
         "presence_penalty":  0.6,
         "frequency_penalty": 0.2,
@@ -165,7 +165,7 @@ async def think_stream(
     payload = {
         "model":             "deepseek-chat",
         "messages":          messages,
-        "temperature":       1.4,
+        "temperature":       1.0,
         "max_tokens":        max_tokens,
         "presence_penalty":  0.6,
         "frequency_penalty": 0.2,
@@ -239,7 +239,7 @@ async def think_stream(
         payload2 = {
             "model":             "deepseek-chat",
             "messages":          messages2,
-            "temperature":       1.25,
+            "temperature":       0.95,
             "max_tokens":        max_tokens,
             "presence_penalty":  0.6,
             "frequency_penalty": 0.2,
@@ -311,3 +311,4 @@ async def _call_api(payload: dict) -> Optional[dict]:
     except Exception as e:
         logger.error(f"[brain] API 呼叫失敗: {e}")
         return None
+
