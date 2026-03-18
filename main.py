@@ -32,6 +32,8 @@ logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
+VERSION_MAIN = "3.0"
+
 # ----------------------------------------------------------
 # 環境變數
 # ----------------------------------------------------------
