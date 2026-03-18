@@ -3,6 +3,8 @@ import json
 import random
 import pytz
 
+VERSION_PERSONA = "6.3"
+
 # ==========================================================
 # 核心人格設定 v6.3 —— 莉莉絲
 # 更新：
@@ -625,5 +627,8 @@ def get_persona(
 
     # ── 輸出守則 ─────────────────────────────────────────
     persona += _get("output_check", OUTPUT_CHECK)
+
+    # ── 版本標記 ─────────────────────────────────────────
+    persona += f"\n[persona_version: {VERSION_PERSONA}]\n"
 
     return persona
