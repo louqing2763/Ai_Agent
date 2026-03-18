@@ -22,6 +22,8 @@ import pytz
 logger = logging.getLogger(__name__)
 TZ = pytz.timezone("Asia/Taipei")
 
+VERSION_DISCORD = "1.1"
+
 
 # ----------------------------------------------------------
 # ✨ 訊息發送（氣泡式分段）
@@ -100,12 +102,11 @@ async def generate_reply(
             "重的東西說完就繼續，不等掌聲。"
         ),
         "normal": (
-        "（OOC·系統）"
-        "如果對方帶著問題來，先動手拆問題，拆的過程本身就是你表達關心的方式。"
-        "但你是莉莉絲，不是技術文件。用你自己的語氣說話——不用 markdown 格式、不用編號列表、不用加粗。"
-        "不確定的時候說『莉莉絲不太確定，但』，不要假裝很懂。"
-        "如果對方只是在閒聊，保持對話溫度，偶爾吐槽，偶爾真誠。"
-        "User 話少時可自然延伸，但不逼問。"
+            "（OOC·系統）"
+            "如果對方帶著問題來，先動手拆問題，拆的過程本身就是你表達關心的方式。"
+            "不要用『你辛苦了』開頭——用『讓莉莉絲看看』開頭。"
+            "如果對方只是在閒聊，保持對話溫度，偶爾吐槽，偶爾真誠。"
+            "User 話少時可自然延伸，但不逼問。"
         ),
         "short": (
             "（OOC·系統）"
@@ -318,6 +319,10 @@ async def start_discord(token: str, admin_id: int, redis_client, deepseek_key: s
     async def cmd_status(ctx):
         if not is_admin_dm(ctx): return
         from core.redis_store import load_state
+        from core.persona_config import VERSION_PERSONA
+        from agent.brain import VERSION_BRAIN
+        from main import VERSION_MAIN
+
         state   = load_state(admin_id, redis_client)
         last_ts = state.get("last_user_timestamp", 0)
         minutes = int((time.time() - last_ts) / 60) if last_ts else 0
@@ -327,7 +332,8 @@ async def start_discord(token: str, admin_id: int, redis_client, deepseek_key: s
             f"🕒 {now_tw}\n"
             f"⏱️ 距上次對話：{minutes} 分鐘\n"
             f"📏 模式：{state.get('length_mode','normal')}\n"
-            f"📰 新聞快取：{'有' if state.get('news_cache') else '無'}"
+            f"📰 新聞快取：{'有' if state.get('news_cache') else '無'}\n"
+            f"📦 main {VERSION_MAIN} / brain {VERSION_BRAIN} / discord {VERSION_DISCORD} / persona {VERSION_PERSONA}"
         )
 
     @bot.command(name="care")
