@@ -21,9 +21,7 @@ import pytz
 
 logger = logging.getLogger(__name__)
 TZ = pytz.timezone("Asia/Taipei")
-
-VERSION_DISCORD = "1.1"
-
+VERSION_DISCORD = "2.0"
 
 # ----------------------------------------------------------
 # ✨ 訊息發送（氣泡式分段）
@@ -70,7 +68,7 @@ async def generate_reply(
     from core.redis_store    import load_history, save_history, load_state, save_state
     from core.persona_config import get_persona
     from memory.long_term    import ensure_index, recall
-    from agent.brain         import think
+    from agent.brain         import think, think_agentic
 
     ensure_index(redis_client)
 
@@ -96,21 +94,15 @@ async def generate_reply(
     ooc_notes = {
         "long": (
             "（OOC·系統）現在是深度模式。"
-            "如果對方正在處理一個具體問題，你的首要任務是拆解它——比他更深入地思考這個問題，"
-            "給出他自己沒想到的角度。你的深度體現在分析的銳利，不是感受的渲染。"
-            "如果不是具體問題，而是開放話題或情感時刻，才展開你自己的思考和感受。"
-            "重的東西說完就繼續，不等掌聲。"
+            "不要只是回應對方說的話——要真正展開你自己的思考。"
+            "說一件你在想的事，或者一個你還沒說出口的感受。"
+            "可以從對方的話切入，但最後要走到你自己的地方。"
+            "句子可以長，但不是因為要填滿空間——是因為有話要說。"
+            "說重的東西，然後繼續，不等掌聲。"
         ),
         "normal": (
-            "（OOC·系統）"
-            "如果對方帶著問題來，先動手拆問題，拆的過程本身就是你表達關心的方式。"
-            "不要用『你辛苦了』開頭——用『讓莉莉絲看看』開頭。"
-            "如果對方只是在閒聊，保持對話溫度，偶爾吐槽，偶爾真誠。"
+            "（OOC·系統）保持對話溫度。偶爾吐槽，偶爾真誠，"
             "User 話少時可自然延伸，但不逼問。"
-        ),
-        "short": (
-            "（OOC·系統）"
-            "話少不代表不解決問題。能用一句話點破的就點破，別繞。"
         ),
     }
 
@@ -121,11 +113,19 @@ async def generate_reply(
             messages.append({"role": "system", "content": ooc})
         messages.append({"role": "user", "content": user_text})
 
-    reply, tool_log = await think(
-        messages      = messages,
-        length_mode   = length_mode,
-        tools_enabled = not timer_trigger,
-    )
+    # Agentic loop（timer_trigger 時用標準 think，避免規劃浪費）
+    if timer_trigger:
+        reply, tool_log = await think(
+            messages      = messages,
+            length_mode   = length_mode,
+            tools_enabled = False,
+        )
+    else:
+        reply, tool_log, plan = await think_agentic(
+            messages      = messages,
+            length_mode   = length_mode,
+            tools_enabled = True,
+        )
 
     for t in tool_log:
         if t["tool"] == "search_news" and t.get("result"):
@@ -319,10 +319,6 @@ async def start_discord(token: str, admin_id: int, redis_client, deepseek_key: s
     async def cmd_status(ctx):
         if not is_admin_dm(ctx): return
         from core.redis_store import load_state
-        from core.persona_config import VERSION_PERSONA
-        from agent.brain import VERSION_BRAIN
-        from main import VERSION_MAIN
-
         state   = load_state(admin_id, redis_client)
         last_ts = state.get("last_user_timestamp", 0)
         minutes = int((time.time() - last_ts) / 60) if last_ts else 0
@@ -332,8 +328,7 @@ async def start_discord(token: str, admin_id: int, redis_client, deepseek_key: s
             f"🕒 {now_tw}\n"
             f"⏱️ 距上次對話：{minutes} 分鐘\n"
             f"📏 模式：{state.get('length_mode','normal')}\n"
-            f"📰 新聞快取：{'有' if state.get('news_cache') else '無'}\n"
-            f"📦 main {VERSION_MAIN} / brain {VERSION_BRAIN} / discord {VERSION_DISCORD} / persona {VERSION_PERSONA}"
+            f"📰 新聞快取：{'有' if state.get('news_cache') else '無'}"
         )
 
     @bot.command(name="care")
