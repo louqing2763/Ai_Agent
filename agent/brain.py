@@ -1,9 +1,15 @@
 """
 agent/brain.py — 意圖理解 + 工具選擇
 
-v2.1 新增：
-  - think_stream(): 串流版推理，供通話模式使用
-  - 依賴 httpx（非 requests）以支援 async streaming
+v3.0 新增：
+  - think_agentic(): Agentic thinking loop
+    Step 1 — Gemini Flash 規劃（要不要用工具、要展開哪個話題）
+    Step 2 — 執行工具（只跑需要的）
+    Step 3 — DeepSeek 生成最終回覆（帶著規劃結果）
+
+v2.1：
+  - think_stream(): 串流版推理
+  - 依賴 httpx 支援 async streaming
 """
 
 import os
@@ -15,12 +21,14 @@ from typing import Optional, AsyncGenerator
 import httpx
 import requests
 
+VERSION_BRAIN = "3.0"
 logger = logging.getLogger(__name__)
-
-VERSION_BRAIN = "2.2"
 
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_URL     = "https://api.deepseek.com/v1/chat/completions"
+
+GEMINI_API_KEY   = os.getenv("GEMINI_API_KEY", "")
+GEMINI_URL       = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 
 # ----------------------------------------------------------
 # 🔧 工具定義
@@ -84,9 +92,219 @@ TOOL_DEFINITIONS = [
     },
 ]
 
+# 工具名稱列表（供規劃步驟參考）
+TOOL_NAMES = [t["function"]["name"] for t in TOOL_DEFINITIONS]
+
 
 # ----------------------------------------------------------
-# 🧠 標準推理（非串流）
+# 🤖 Agentic Thinking Loop（v3.0 核心）
+# ----------------------------------------------------------
+async def think_agentic(
+    messages: list,
+    length_mode: str = "normal",
+    tools_enabled: bool = True,
+) -> tuple[str, list, dict]:
+    """
+    三步驟 Agentic loop：
+
+    Step 1 — Gemini Flash 規劃
+      輸入：最近幾條對話 + 當前訊息
+      輸出：{
+        "need_tools": ["tool_name", ...],   # 要用的工具，可以空
+        "topic_to_expand": "...",           # 值得深入的話題，可以空
+        "approach": "..."                   # 回覆方向（一句話）
+      }
+
+    Step 2 — 執行工具（只跑規劃指定的）
+
+    Step 3 — DeepSeek 生成
+      把規劃思路 + 工具結果一起注入，生成最終回覆
+
+    Returns:
+      (reply, tool_log, plan)
+    """
+    tool_log = []
+    plan     = {}
+
+    # ── Step 1：Gemini 規劃 ───────────────────────────────
+    plan = await _gemini_plan(messages, tools_enabled)
+    logger.info(f"[agentic] 規劃結果: {plan}")
+
+    # ── Step 2：執行工具 ──────────────────────────────────
+    tool_context = ""
+    if tools_enabled and plan.get("need_tools"):
+        for tool_name in plan["need_tools"]:
+            if tool_name not in TOOL_NAMES:
+                continue
+            # 推斷工具參數（簡單版：從最後一條 user 訊息提取）
+            last_user = next(
+                (m["content"] for m in reversed(messages) if m["role"] == "user"),
+                ""
+            )
+            args   = _infer_tool_args(tool_name, last_user)
+            result = await _execute_tool(tool_name, args)
+            tool_log.append({"tool": tool_name, "args": args, "result": result})
+            tool_context += f"\n[工具結果 - {tool_name}]\n{result}\n"
+
+    # ── Step 3：DeepSeek 生成 ─────────────────────────────
+    # 把規劃思路注入到 system 最後
+    plan_injection = _build_plan_injection(plan, tool_context)
+    messages_with_plan = messages.copy()
+
+    # 在最後一條 user 訊息之前插入規劃注入
+    if plan_injection:
+        messages_with_plan = messages[:-1] + [
+            {"role": "system", "content": plan_injection},
+            messages[-1],
+        ] if messages and messages[-1]["role"] == "user" else messages + [
+            {"role": "system", "content": plan_injection}
+        ]
+
+    max_tokens_map = {"short": 150, "normal": 600, "long": 2500}
+    max_tokens     = max_tokens_map.get(length_mode, 600)
+
+    payload = {
+        "model":             "deepseek-chat",
+        "messages":          messages_with_plan,
+        "temperature":       1.4,
+        "max_tokens":        max_tokens,
+        "presence_penalty":  0.6,
+        "frequency_penalty": 0.2,
+    }
+
+    response = await _call_api(payload)
+    if response is None:
+        return "(連線中斷，請稍後再試)", tool_log, plan
+
+    reply = response["choices"][0]["message"].get("content", "")
+    return reply, tool_log, plan
+
+
+def _build_plan_injection(plan: dict, tool_context: str) -> str:
+    """把規劃結果轉成注入 system 的提示"""
+    parts = []
+
+    if tool_context:
+        parts.append(tool_context)
+
+    topic = plan.get("topic_to_expand", "")
+    if topic:
+        parts.append(
+            f"（OOC·規劃）這次對話裡有一個值得深入的點：{topic}\n"
+            f"如果自然的話，可以往這個方向展開，不要強迫，但不要錯過。"
+        )
+
+    approach = plan.get("approach", "")
+    if approach:
+        parts.append(f"（OOC·方向）{approach}")
+
+    return "\n".join(parts)
+
+
+def _infer_tool_args(tool_name: str, user_text: str) -> dict:
+    """從 user 訊息簡單推斷工具參數"""
+    if tool_name == "get_weather":
+        # 嘗試提取城市名（簡單關鍵字匹配）
+        cities = ["台北", "台中", "高雄", "台南", "新竹", "東京", "Tokyo", "大阪"]
+        for city in cities:
+            if city in user_text:
+                return {"city": city}
+        return {"city": "台北"}
+    elif tool_name == "search_news":
+        # 用 user 文字的前 30 字作為查詢
+        return {"query": user_text[:30]}
+    elif tool_name == "get_system_status":
+        return {"detail": "all"}
+    return {}
+
+
+# ----------------------------------------------------------
+# 🌐 Gemini Flash 規劃
+# ----------------------------------------------------------
+async def _gemini_plan(messages: list, tools_enabled: bool) -> dict:
+    """
+    用 Gemini Flash 做輕量規劃。
+    只看最近 6 條對話，輸出 JSON。
+    失敗時回傳空規劃（fallback 到標準 think）。
+    """
+    if not GEMINI_API_KEY:
+        return {}
+
+    # 取最近 6 條
+    recent = messages[-6:] if len(messages) > 6 else messages
+    convo  = "\n".join(
+        f"{'User' if m['role'] == 'user' else 'Lilith' if m['role'] == 'assistant' else 'System'}: "
+        f"{m['content'][:200]}"
+        for m in recent
+        if m["role"] in ("user", "assistant")
+    )
+
+    tools_hint = (
+        f"可用工具：{', '.join(TOOL_NAMES)}" if tools_enabled
+        else "這次不使用工具。"
+    )
+
+    prompt = f"""你是一個對話規劃助手。根據以下對話片段，決定下一步的回覆策略。
+
+對話：
+{convo}
+
+{tools_hint}
+
+請只回傳 JSON，不要有任何其他文字：
+{{
+  "need_tools": [],
+  "topic_to_expand": "",
+  "approach": ""
+}}
+
+說明：
+- need_tools: 這次回覆需要呼叫的工具名稱列表（空列表代表不需要）
+- topic_to_expand: 對話裡有沒有值得深入探討的話題或情緒？用一句話描述，沒有就留空
+- approach: 這次回覆的方向，用一句話描述（例如：「User 說了很重的話，先接住情緒再說別的」），沒有特別的就留空
+"""
+
+    try:
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature":    0.3,
+                "maxOutputTokens": 200,
+            },
+        }
+        headers = {"Content-Type": "application/json"}
+        url     = f"{GEMINI_URL}?key={GEMINI_API_KEY}"
+
+        res = await asyncio.to_thread(
+            requests.post, url,
+            headers=headers, json=payload, timeout=15,
+        )
+
+        if res.status_code != 200:
+            logger.warning(f"[gemini] 規劃失敗: {res.status_code}")
+            return {}
+
+        text = res.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        text = text.replace("```json", "").replace("```", "").strip()
+        plan = json.loads(text)
+
+        # 驗證格式
+        plan.setdefault("need_tools", [])
+        plan.setdefault("topic_to_expand", "")
+        plan.setdefault("approach", "")
+
+        # 過濾無效工具名
+        plan["need_tools"] = [t for t in plan["need_tools"] if t in TOOL_NAMES]
+
+        return plan
+
+    except Exception as e:
+        logger.warning(f"[gemini] 規劃例外: {e}")
+        return {}
+
+
+# ----------------------------------------------------------
+# 🧠 標準推理（非串流，向下相容）
 # ----------------------------------------------------------
 async def think(
     messages: list,
@@ -100,7 +318,7 @@ async def think(
     payload = {
         "model":             "deepseek-chat",
         "messages":          messages,
-        "temperature":       1.0,
+        "temperature":       1.4,
         "max_tokens":        max_tokens,
         "presence_penalty":  0.6,
         "frequency_penalty": 0.2,
@@ -138,7 +356,7 @@ async def think(
     final_payload = {
         "model":             "deepseek-chat",
         "messages":          messages_with_results,
-        "temperature":       0.95,
+        "temperature":       1.25,
         "max_tokens":        max_tokens,
         "presence_penalty":  0.6,
         "frequency_penalty": 0.2,
@@ -157,17 +375,13 @@ async def think_stream(
     messages: list,
     length_mode: str = "normal",
 ) -> AsyncGenerator[str, None]:
-    """
-    串流版推理：以 async generator 逐段 yield 文字。
-    工具呼叫仍同步處理完畢，再串流最終回覆。
-    """
     max_tokens_map = {"short": 150, "normal": 600, "long": 2500}
     max_tokens     = max_tokens_map.get(length_mode, 600)
 
     payload = {
         "model":             "deepseek-chat",
         "messages":          messages,
-        "temperature":       1.0,
+        "temperature":       1.4,
         "max_tokens":        max_tokens,
         "presence_penalty":  0.6,
         "frequency_penalty": 0.2,
@@ -200,7 +414,6 @@ async def think_stream(
                     continue
 
                 delta = chunk["choices"][0].get("delta", {})
-
                 if delta.get("content"):
                     yield delta["content"]
 
@@ -216,7 +429,6 @@ async def think_stream(
                     if fn.get("arguments"):
                         tool_calls_acc[idx]["arguments"] += fn["arguments"]
 
-    # 有工具呼叫：執行後再串流最終回覆
     if tool_calls_acc:
         tool_results = []
         for tc in tool_calls_acc.values():
@@ -241,7 +453,7 @@ async def think_stream(
         payload2 = {
             "model":             "deepseek-chat",
             "messages":          messages2,
-            "temperature":       0.95,
+            "temperature":       1.25,
             "max_tokens":        max_tokens,
             "presence_penalty":  0.6,
             "frequency_penalty": 0.2,
@@ -294,7 +506,7 @@ async def _execute_tool(fn_name: str, fn_args: dict) -> str:
 
 
 # ----------------------------------------------------------
-# 🌐 API 呼叫（非串流）
+# 🌐 DeepSeek API 呼叫（非串流）
 # ----------------------------------------------------------
 async def _call_api(payload: dict) -> Optional[dict]:
     headers = {
