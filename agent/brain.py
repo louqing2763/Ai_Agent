@@ -28,7 +28,8 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_URL     = "https://api.deepseek.com/v1/chat/completions"
 
 GEMINI_API_KEY   = os.getenv("GEMINI_API_KEY", "")
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent"
+GEMINI_URL       = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+
 # ----------------------------------------------------------
 # 🔧 工具定義
 # ----------------------------------------------------------
@@ -159,13 +160,13 @@ async def think_agentic(
             {"role": "system", "content": plan_injection}
         ]
 
-    max_tokens_map = {"short": 150, "normal": 600, "long": 2500}
+    max_tokens_map = {"short": 150, "normal": 600, "long": 2500, "auto": 1200}
     max_tokens     = max_tokens_map.get(length_mode, 600)
 
     payload = {
         "model":             "deepseek-chat",
         "messages":          messages_with_plan,
-        "temperature":       1.4,
+        "temperature":       1.0,
         "max_tokens":        max_tokens,
         "presence_penalty":  0.6,
         "frequency_penalty": 0.2,
@@ -310,14 +311,14 @@ async def think(
     length_mode: str = "normal",
     tools_enabled: bool = True,
 ) -> tuple[str, list]:
-    max_tokens_map = {"short": 150, "normal": 600, "long": 2500}
+    max_tokens_map = {"short": 150, "normal": 600, "long": 2500, "auto": 1200}
     max_tokens     = max_tokens_map.get(length_mode, 600)
     tool_calls_log = []
 
     payload = {
         "model":             "deepseek-chat",
         "messages":          messages,
-        "temperature":       1.4,
+        "temperature":       1.0,
         "max_tokens":        max_tokens,
         "presence_penalty":  0.6,
         "frequency_penalty": 0.2,
@@ -355,7 +356,7 @@ async def think(
     final_payload = {
         "model":             "deepseek-chat",
         "messages":          messages_with_results,
-        "temperature":       1.25,
+        "temperature":       0.95,
         "max_tokens":        max_tokens,
         "presence_penalty":  0.6,
         "frequency_penalty": 0.2,
@@ -374,13 +375,13 @@ async def think_stream(
     messages: list,
     length_mode: str = "normal",
 ) -> AsyncGenerator[str, None]:
-    max_tokens_map = {"short": 150, "normal": 600, "long": 2500}
+    max_tokens_map = {"short": 150, "normal": 600, "long": 2500, "auto": 1200}
     max_tokens     = max_tokens_map.get(length_mode, 600)
 
     payload = {
         "model":             "deepseek-chat",
         "messages":          messages,
-        "temperature":       1.4,
+        "temperature":       1.0,
         "max_tokens":        max_tokens,
         "presence_penalty":  0.6,
         "frequency_penalty": 0.2,
@@ -452,7 +453,7 @@ async def think_stream(
         payload2 = {
             "model":             "deepseek-chat",
             "messages":          messages2,
-            "temperature":       1.25,
+            "temperature":       0.95,
             "max_tokens":        max_tokens,
             "presence_penalty":  0.6,
             "frequency_penalty": 0.2,
