@@ -166,7 +166,7 @@ async def think_agentic(
     payload = {
         "model":             "deepseek-chat",
         "messages":          messages_with_plan,
-        "temperature":       1.0,
+        "temperature":       1.25,
         "max_tokens":        max_tokens,
         "presence_penalty":  0.6,
         "frequency_penalty": 0.2,
