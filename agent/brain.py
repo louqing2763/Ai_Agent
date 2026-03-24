@@ -28,8 +28,7 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_URL     = "https://api.deepseek.com/v1/chat/completions"
 
 GEMINI_API_KEY   = os.getenv("GEMINI_API_KEY", "")
-GEMINI_URL       = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
-
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent"
 # ----------------------------------------------------------
 # 🔧 工具定義
 # ----------------------------------------------------------
