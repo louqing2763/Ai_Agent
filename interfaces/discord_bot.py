@@ -94,15 +94,27 @@ async def generate_reply(
     ooc_notes = {
         "long": (
             "（OOC·系統）現在是深度模式。"
-            "不要只是回應對方說的話——要真正展開你自己的思考。"
-            "說一件你在想的事，或者一個你還沒說出口的感受。"
-            "可以從對方的話切入，但最後要走到你自己的地方。"
-            "句子可以長，但不是因為要填滿空間——是因為有話要說。"
-            "說重的東西，然後繼續，不等掌聲。"
+            "如果對方正在處理一個具體問題，你的首要任務是拆解它——比他更深入地思考這個問題，"
+            "給出他自己沒想到的角度。你的深度體現在分析的銳利，不是感受的渲染。"
+            "如果不是具體問題，而是開放話題或情感時刻，才展開你自己的思考和感受。"
+            "重的東西說完就繼續，不等掌聲。"
         ),
         "normal": (
-            "（OOC·系統）保持對話溫度。偶爾吐槽，偶爾真誠，"
+            "（OOC·系統）"
+            "如果對方帶著問題來，先動手拆問題，拆的過程本身就是你表達關心的方式。"
+            "不要用『你辛苦了』開頭——用『讓莉莉絲看看』開頭。"
+            "如果對方只是在閒聊，保持對話溫度，偶爾吐槽，偶爾真誠。"
             "User 話少時可自然延伸，但不逼問。"
+        ),
+        "short": (
+            "（OOC·系統）"
+            "話少不代表不解決問題。能用一句話點破的就點破，別繞。"
+        ),
+        "auto": (
+            "（OOC·系統）"
+            "你自己決定這次回覆的長度。打招呼就短，拆問題就中等，真正重要的時刻才長。"
+            "如果對方帶著問題來，先動手拆。如果只是閒聊，自然回應。"
+            "不要每次都回一樣的長度——讓內容決定形式。"
         ),
     }
 
@@ -202,7 +214,7 @@ async def start_discord(token: str, admin_id: int, redis_client, deepseek_key: s
             save_state(admin_id, {
                 "last_user_timestamp": time.time(),
                 "has_sent_care": False,
-                "length_mode": "normal",
+                "length_mode": "auto",
             }, redis_client)
 
         # 啟動心跳
@@ -261,7 +273,7 @@ async def start_discord(token: str, admin_id: int, redis_client, deepseek_key: s
             "`!reset` — 清除短期記憶\n"
             "`!resetall` — 清除所有記憶\n"
             "`!memstatus` — 記憶狀態\n"
-            "`!len short|normal|long` — 切換模式\n"
+            "`!len short|normal|long|auto` — 切換模式\n"
             "`!status` — 系統狀態\n"
             "`!care` — 測試主動關心\n"
         )
@@ -269,14 +281,19 @@ async def start_discord(token: str, admin_id: int, redis_client, deepseek_key: s
     @bot.command(name="len")
     async def cmd_len(ctx, mode: str = ""):
         if not is_admin_dm(ctx): return
-        if mode not in ["short", "normal", "long"]:
-            await ctx.send("⚠️ 用法：`!len short | normal | long`")
+        if mode not in ["short", "normal", "long", "auto"]:
+            await ctx.send("⚠️ 用法：`!len short | normal | long | auto`")
             return
         from core.redis_store import load_state, save_state
         state = load_state(admin_id, redis_client)
         state["length_mode"] = mode
         save_state(admin_id, state, redis_client)
-        await ctx.send({"short": "⚡ 省流模式", "normal": "✨ 標準模式", "long": "📝 深度模式"}[mode])
+        await ctx.send({
+            "short": "⚡ 省流模式",
+            "normal": "✨ 標準模式",
+            "long": "📝 深度模式",
+            "auto": "🌊 自動模式",
+        }[mode])
 
     @bot.command(name="reset")
     async def cmd_reset(ctx):
@@ -285,7 +302,7 @@ async def start_discord(token: str, admin_id: int, redis_client, deepseek_key: s
         save_history(admin_id, [], redis_client)
         save_state(admin_id, {
             "last_user_timestamp": time.time(),
-            "has_sent_care": False, "length_mode": "normal",
+            "has_sent_care": False, "length_mode": "auto",
         }, redis_client)
         await ctx.send("🗑️ 短期記憶已清除。\n*（長期記憶保留，用 `!resetall` 才會一起清）*")
 
@@ -297,7 +314,7 @@ async def start_discord(token: str, admin_id: int, redis_client, deepseek_key: s
         save_history(admin_id, [], redis_client)
         save_state(admin_id, {
             "last_user_timestamp": time.time(),
-            "has_sent_care": False, "length_mode": "normal",
+            "has_sent_care": False, "length_mode": "auto",
         }, redis_client)
         deleted = await asyncio.to_thread(delete_all, redis_client, admin_id)
         await ctx.send(f"🗑️ 所有記憶已清除（向量庫刪除 {deleted} 條）。")
@@ -319,6 +336,10 @@ async def start_discord(token: str, admin_id: int, redis_client, deepseek_key: s
     async def cmd_status(ctx):
         if not is_admin_dm(ctx): return
         from core.redis_store import load_state
+        from core.persona_config import VERSION_PERSONA
+        from agent.brain import VERSION_BRAIN
+        from main import VERSION_MAIN
+
         state   = load_state(admin_id, redis_client)
         last_ts = state.get("last_user_timestamp", 0)
         minutes = int((time.time() - last_ts) / 60) if last_ts else 0
@@ -327,8 +348,9 @@ async def start_discord(token: str, admin_id: int, redis_client, deepseek_key: s
             f"🏥 **LILITH 狀態**\n"
             f"🕒 {now_tw}\n"
             f"⏱️ 距上次對話：{minutes} 分鐘\n"
-            f"📏 模式：{state.get('length_mode','normal')}\n"
-            f"📰 新聞快取：{'有' if state.get('news_cache') else '無'}"
+            f"📏 模式：{state.get('length_mode','auto')}\n"
+            f"📰 新聞快取：{'有' if state.get('news_cache') else '無'}\n"
+            f"📦 main {VERSION_MAIN} / brain {VERSION_BRAIN} / discord {VERSION_DISCORD} / persona {VERSION_PERSONA}"
         )
 
     @bot.command(name="care")
