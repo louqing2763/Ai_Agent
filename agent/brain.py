@@ -3,9 +3,9 @@ agent/brain.py — 意圖理解 + 工具選擇
 
 v3.0 新增：
   - think_agentic(): Agentic thinking loop
-    Step 1 — Gemini Flash 規劃（要不要用工具、要展開哪個話題）
+    Step 1 — OpenAI 輕量模型規劃（要不要用工具、要展開哪個話題）
     Step 2 — 執行工具（只跑需要的）
-    Step 3 — DeepSeek 生成最終回覆（帶著規劃結果）
+    Step 3 — OpenAI 生成最終回覆（帶著規劃結果）
 
 v2.1：
   - think_stream(): 串流版推理
@@ -23,11 +23,10 @@ import httpx
 VERSION_BRAIN = "3.0"
 logger = logging.getLogger(__name__)
 
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
-DEEPSEEK_URL     = "https://api.deepseek.com/v1/chat/completions"
-
-GEMINI_API_KEY   = os.getenv("GEMINI_API_KEY", "")
-GEMINI_URL       = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+OPENAI_API_KEY    = os.getenv("OPENAI_API_KEY", "")
+OPENAI_URL        = "https://api.openai.com/v1/chat/completions"
+OPENAI_MODEL      = os.getenv("OPENAI_MODEL", "gpt-4o")
+OPENAI_PLAN_MODEL = os.getenv("OPENAI_PLAN_MODEL", "gpt-4o-mini")  # 規劃用的輕量模型
 
 # ----------------------------------------------------------
 # 🔧 工具定義
@@ -126,7 +125,7 @@ async def think_agentic(
     plan     = {}
 
     # ── Step 1：Gemini 規劃 ───────────────────────────────
-    plan = await _gemini_plan(messages, tools_enabled)
+    plan = await _openai_plan(messages, tools_enabled)
     logger.info(f"[agentic] 規劃結果: {plan}")
 
     # ── Step 2：執行工具 ──────────────────────────────────
@@ -163,7 +162,7 @@ async def think_agentic(
     max_tokens     = max_tokens_map.get(length_mode, 600)
 
     payload = {
-        "model":             "deepseek-chat",
+        "model":             OPENAI_MODEL,
         "messages":          messages_with_plan,
         "temperature":       1.25,
         "max_tokens":        max_tokens,
@@ -232,15 +231,15 @@ def _infer_tool_args(tool_name: str, user_text: str) -> dict:
 
 
 # ----------------------------------------------------------
-# 🌐 Gemini Flash 規劃
+# 🌐 OpenAI 輕量規劃（取代 Gemini Flash）
 # ----------------------------------------------------------
-async def _gemini_plan(messages: list, tools_enabled: bool) -> dict:
+async def _openai_plan(messages: list, tools_enabled: bool) -> dict:
     """
-    用 Gemini Flash 做輕量規劃。
+    用 OpenAI 輕量模型做規劃。
     只看最近 6 條對話，輸出 JSON。
     失敗時回傳空規劃（fallback 到標準 think）。
     """
-    if not GEMINI_API_KEY:
+    if not OPENAI_API_KEY:
         return {}
 
     # 取最近 6 條
@@ -279,25 +278,24 @@ async def _gemini_plan(messages: list, tools_enabled: bool) -> dict:
 
     try:
         payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature":    0.3,
-                "maxOutputTokens": 200,
-            },
+            "model":       OPENAI_PLAN_MODEL,
+            "messages":    [{"role": "user", "content": prompt}],
+            "temperature": 0.3,
+            "max_tokens":  200,
         }
         headers = {
-            "Content-Type": "application/json",
-            "x-goog-api-key": GEMINI_API_KEY,
+            "Content-Type":  "application/json",
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
         }
 
         async with httpx.AsyncClient(timeout=15) as client:
-            res = await client.post(GEMINI_URL, headers=headers, json=payload)
+            res = await client.post(OPENAI_URL, headers=headers, json=payload)
 
         if res.status_code != 200:
-            logger.warning(f"[gemini] 規劃失敗: {res.status_code}")
+            logger.warning(f"[plan] 規劃失敗: {res.status_code}")
             return {}
 
-        text = res.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        text = res.json()["choices"][0]["message"]["content"].strip()
         text = text.replace("```json", "").replace("```", "").strip()
         plan = json.loads(text)
 
@@ -312,7 +310,7 @@ async def _gemini_plan(messages: list, tools_enabled: bool) -> dict:
         return plan
 
     except Exception as e:
-        logger.warning(f"[gemini] 規劃例外: {e}")
+        logger.warning(f"[plan] 規劃例外: {e}")
         return {}
 
 
@@ -329,7 +327,7 @@ async def think(
     tool_calls_log = []
 
     payload = {
-        "model":             "deepseek-chat",
+        "model":             OPENAI_MODEL,
         "messages":          messages,
         "temperature":       1.25,
         "max_tokens":        max_tokens,
@@ -367,7 +365,7 @@ async def think(
         *tool_results,
     ]
     final_payload = {
-        "model":             "deepseek-chat",
+        "model":             OPENAI_MODEL,
         "messages":          messages_with_results,
         "temperature":       0.95,
         "max_tokens":        max_tokens,
@@ -392,7 +390,7 @@ async def think_stream(
     max_tokens     = max_tokens_map.get(length_mode, 600)
 
     payload = {
-        "model":             "deepseek-chat",
+        "model":             OPENAI_MODEL,
         "messages":          messages,
         "temperature":       1.0,
         "max_tokens":        max_tokens,
@@ -404,13 +402,13 @@ async def think_stream(
     }
     headers = {
         "Content-Type":  "application/json",
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
     }
 
     tool_calls_acc = {}
 
     async with httpx.AsyncClient(timeout=90) as client:
-        async with client.stream("POST", DEEPSEEK_URL, headers=headers, json=payload) as resp:
+        async with client.stream("POST", OPENAI_URL, headers=headers, json=payload) as resp:
             if resp.status_code != 200:
                 yield "(連線失敗)"
                 return
@@ -464,7 +462,7 @@ async def think_stream(
             *tool_results,
         ]
         payload2 = {
-            "model":             "deepseek-chat",
+            "model":             OPENAI_MODEL,
             "messages":          messages2,
             "temperature":       0.95,
             "max_tokens":        max_tokens,
@@ -474,7 +472,7 @@ async def think_stream(
         }
         async with httpx.AsyncClient(timeout=90) as client:
             async with client.stream(
-                "POST", DEEPSEEK_URL, headers=headers, json=payload2
+                "POST", OPENAI_URL, headers=headers, json=payload2
             ) as resp2:
                 async for line in resp2.aiter_lines():
                     if not line.startswith("data: "):
@@ -526,12 +524,12 @@ _MAX_RETRIES = 3
 async def _call_api(payload: dict) -> Optional[dict]:
     headers = {
         "Content-Type":  "application/json",
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
     }
     for attempt in range(_MAX_RETRIES):
         try:
             async with httpx.AsyncClient(timeout=60) as client:
-                res = await client.post(DEEPSEEK_URL, headers=headers, json=payload)
+                res = await client.post(OPENAI_URL, headers=headers, json=payload)
             if res.status_code == 200:
                 return res.json()
             logger.error(f"[brain] API 錯誤: {res.status_code} {res.text[:200]}")

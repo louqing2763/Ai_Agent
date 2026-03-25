@@ -60,7 +60,7 @@ async def send_bubbles(channel, text: str, length_mode: str = "normal"):
 async def generate_reply(
     chat_id: int,
     redis_client,
-    deepseek_key: str,
+    llm_key: str,
     user_text: str = None,
     timer_trigger: bool = False,
     minutes_since_last: int = 0,
@@ -176,7 +176,7 @@ async def _bg_save_memory(redis_client, chat_id, user_text, reply):
 # ----------------------------------------------------------
 # 🚀 啟動入口
 # ----------------------------------------------------------
-async def start_discord(token: str, admin_id: int, redis_client, deepseek_key: str):
+async def start_discord(token: str, admin_id: int, redis_client, llm_key: str):
     intents = discord.Intents.default()
     intents.message_content = True
     intents.dm_messages     = True
@@ -229,7 +229,7 @@ async def start_discord(token: str, admin_id: int, redis_client, deepseek_key: s
         try:
             dm = await get_dm(admin_id)
             reply = await generate_reply(
-                admin_id, redis_client, deepseek_key,
+                admin_id, redis_client, llm_key,
                 user_text="(System: Bot started. Wake up and say hello.)"
             )
             await send_bubbles(dm, reply)
@@ -259,7 +259,7 @@ async def start_discord(token: str, admin_id: int, redis_client, deepseek_key: s
 
         async with message.channel.typing():
             reply = await generate_reply(
-                admin_id, redis_client, deepseek_key,
+                admin_id, redis_client, llm_key,
                 user_text=message.content,
             )
         await send_bubbles(message.channel, reply, length_mode=state.get("length_mode","normal"))
@@ -361,7 +361,7 @@ async def start_discord(token: str, admin_id: int, redis_client, deepseek_key: s
         await ctx.send("🧪 強制觸發關心……")
         state = load_state_helper(admin_id, redis_client)
         reply = await generate_reply(
-            admin_id, redis_client, deepseek_key,
+            admin_id, redis_client, llm_key,
             user_text="(System Test: 強制觸發主動關心)",
             timer_trigger=True, minutes_since_last=300,
         )
@@ -548,7 +548,7 @@ async def start_discord(token: str, admin_id: int, redis_client, deepseek_key: s
                             f"不用解釋技術細節，就說你注意到了什麼、有什麼感受。)"
                         )
                         reply = await generate_reply(
-                            admin_id, redis_client, deepseek_key,
+                            admin_id, redis_client, llm_key,
                             user_text=prompt, timer_trigger=True,
                             minutes_since_last=minutes_since_last,
                         )
@@ -568,7 +568,7 @@ async def start_discord(token: str, admin_id: int, redis_client, deepseek_key: s
             if minutes_since_last >= 240 and not is_sleeping and not has_sent_care:
                 logger.info("💗 User 超過 4 小時未回應，啟動主動關心。")
                 reply = await generate_reply(
-                    admin_id, redis_client, deepseek_key,
+                    admin_id, redis_client, llm_key,
                     user_text="(System: User 超過 4 小時沒回應。請主動傳訊關心，語氣擔心但不責備。)",
                     timer_trigger=True, minutes_since_last=minutes_since_last,
                 )
@@ -586,7 +586,7 @@ async def start_discord(token: str, admin_id: int, redis_client, deepseek_key: s
         from tools.mood_tracker import update_mood_today
         logger.info("😶 開始更新今日情緒狀態……")
         try:
-            await update_mood_today(redis_client, admin_id, deepseek_key)
+            await update_mood_today(redis_client, admin_id, llm_key)
         except Exception as e:
             logger.error(f"[mood] 定時更新失敗: {e}")
 
@@ -595,7 +595,7 @@ async def start_discord(token: str, admin_id: int, redis_client, deepseek_key: s
         from tools.mood_tracker import generate_daily_summary
         logger.info("📓 開始生成每日摘要……")
         try:
-            await generate_daily_summary(redis_client, admin_id, deepseek_key)
+            await generate_daily_summary(redis_client, admin_id, llm_key)
         except Exception as e:
             logger.error(f"[daily] 定時摘要失敗: {e}")
 

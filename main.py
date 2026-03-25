@@ -45,10 +45,10 @@ except ImportError:
 
 DISCORD_TOKEN    = os.getenv("DISCORD_TOKEN")
 ADMIN_ID         = int(os.getenv("DISCORD_ADMIN_ID", "0"))
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-if not DISCORD_TOKEN or not ADMIN_ID or not DEEPSEEK_API_KEY:
-    logger.critical("❌ 缺少必要環境變數：DISCORD_TOKEN / DISCORD_ADMIN_ID / DEEPSEEK_API_KEY")
+if not DISCORD_TOKEN or not ADMIN_ID or not OPENAI_API_KEY:
+    logger.critical("❌ 缺少必要環境變數：DISCORD_TOKEN / DISCORD_ADMIN_ID / OPENAI_API_KEY")
     sys.exit(1)
 
 # ----------------------------------------------------------
@@ -105,7 +105,7 @@ def run_discord():
         token        = DISCORD_TOKEN,
         admin_id     = ADMIN_ID,
         redis_client = redis_client,
-        deepseek_key = DEEPSEEK_API_KEY,
+        llm_key      = OPENAI_API_KEY,
     ))
 
 def _discord_watchdog():
@@ -141,7 +141,7 @@ def run_web():
     app = create_app(
         admin_id     = ADMIN_ID,
         redis_client = redis_client,
-        deepseek_key = DEEPSEEK_API_KEY,
+        llm_key      = OPENAI_API_KEY,
     )
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
 

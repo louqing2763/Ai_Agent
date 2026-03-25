@@ -106,7 +106,7 @@ def _get_default_blocks() -> dict:
 # ----------------------------------------------------------
 # 🏗️ App 工廠
 # ----------------------------------------------------------
-def create_app(admin_id: int, redis_client, deepseek_key: str) -> FastAPI:
+def create_app(admin_id: int, redis_client, llm_key: str) -> FastAPI:
     # GET / (HTML 頁面) 不需要驗證，其他 API 端點需要
     app = FastAPI(title="Lilith", version="5.1")
     app.add_middleware(
@@ -133,7 +133,7 @@ def create_app(admin_id: int, redis_client, deepseek_key: str) -> FastAPI:
         try:
             reply = await generate_reply(
                 chat_id=admin_id, redis_client=redis_client,
-                deepseek_key=deepseek_key, user_text=req.message,
+                llm_key=llm_key, user_text=req.message,
             )
         except Exception as e:
             logger.error(f"[web_ui] generate_reply 失敗: {e}")
@@ -255,7 +255,7 @@ def create_app(admin_id: int, redis_client, deepseek_key: str) -> FastAPI:
         from interfaces.discord_bot import generate_reply
         reply = await generate_reply(
             chat_id=admin_id, redis_client=redis_client,
-            deepseek_key=deepseek_key,
+            llm_key=llm_key,
             user_text="(System: 強制觸發主動關心)",
             timer_trigger=True, minutes_since_last=300,
         )

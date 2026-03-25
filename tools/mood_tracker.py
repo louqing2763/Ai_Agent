@@ -11,6 +11,7 @@ tools/mood_tracker.py — 情緒狀態追蹤
   - 清除短期記憶，準備新的一天
 """
 
+import os
 import json
 import asyncio
 import logging
@@ -20,15 +21,16 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
+OPENAI_URL   = "https://api.openai.com/v1/chat/completions"
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
 
 
 # ----------------------------------------------------------
 # 😶 推斷今日情緒
 # ----------------------------------------------------------
-async def update_mood_today(redis_client, chat_id: int, deepseek_key: str):
+async def update_mood_today(redis_client, chat_id: int, llm_key: str):
     """
-    讀取今天的對話歷史，呼叫 DeepSeek 推斷情緒，
+    讀取今天的對話歷史，呼叫 OpenAI 推斷情緒，
     結果存入 Redis lilith:mood_today（TTL 36 小時）
     """
     from core.redis_store import load_history
@@ -56,7 +58,7 @@ async def update_mood_today(redis_client, chat_id: int, deepseek_key: str):
     )
 
     payload = {
-        "model":       "deepseek-chat",
+        "model":       OPENAI_MODEL,
         "messages":    [{"role": "user", "content": prompt}],
         "temperature": 0.7,
         "max_tokens":  150,
@@ -64,12 +66,12 @@ async def update_mood_today(redis_client, chat_id: int, deepseek_key: str):
 
     headers = {
         "Content-Type":  "application/json",
-        "Authorization": f"Bearer {deepseek_key}",
+        "Authorization": f"Bearer {llm_key}",
     }
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            res = await client.post(DEEPSEEK_URL, headers=headers, json=payload)
+            res = await client.post(OPENAI_URL, headers=headers, json=payload)
         if res.status_code != 200:
             logger.error(f"[mood] API 錯誤: {res.status_code}")
             return
@@ -101,7 +103,7 @@ async def update_mood_today(redis_client, chat_id: int, deepseek_key: str):
 # ----------------------------------------------------------
 # 📓 生成每日摘要
 # ----------------------------------------------------------
-async def generate_daily_summary(redis_client, chat_id: int, deepseek_key: str):
+async def generate_daily_summary(redis_client, chat_id: int, llm_key: str):
     """
     凌晨呼叫：
       1. 根據今天的對話生成摘要，存入長期記憶
@@ -131,7 +133,7 @@ async def generate_daily_summary(redis_client, chat_id: int, deepseek_key: str):
     )
 
     payload = {
-        "model":       "deepseek-chat",
+        "model":       OPENAI_MODEL,
         "messages":    [{"role": "user", "content": prompt}],
         "temperature": 0.8,
         "max_tokens":  200,
@@ -139,12 +141,12 @@ async def generate_daily_summary(redis_client, chat_id: int, deepseek_key: str):
 
     headers = {
         "Content-Type":  "application/json",
-        "Authorization": f"Bearer {deepseek_key}",
+        "Authorization": f"Bearer {llm_key}",
     }
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            res = await client.post(DEEPSEEK_URL, headers=headers, json=payload)
+            res = await client.post(OPENAI_URL, headers=headers, json=payload)
         if res.status_code != 200:
             logger.error(f"[daily] API 錯誤: {res.status_code}")
             return
