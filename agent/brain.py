@@ -3,9 +3,9 @@ agent/brain.py — 意圖理解 + 工具選擇
 
 v3.0 新增：
   - think_agentic(): Agentic thinking loop
-    Step 1 — OpenAI 輕量模型規劃（要不要用工具、要展開哪個話題）
+    Step 1 — OpenAI (gpt-4o-mini) 規劃（要不要用工具、要展開哪個話題）
     Step 2 — 執行工具（只跑需要的）
-    Step 3 — OpenAI 生成最終回覆（帶著規劃結果）
+    Step 3 — DeepSeek 生成最終回覆（帶著規劃結果）
 
 v2.1：
   - think_stream(): 串流版推理
@@ -23,10 +23,15 @@ import httpx
 VERSION_BRAIN = "3.0"
 logger = logging.getLogger(__name__)
 
+# ── DeepSeek（主要生成）──────────────────────────────────
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+DEEPSEEK_URL     = "https://api.deepseek.com/v1/chat/completions"
+DEEPSEEK_MODEL   = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+
+# ── OpenAI（規劃用）─────────────────────────────────────
 OPENAI_API_KEY    = os.getenv("OPENAI_API_KEY", "")
 OPENAI_URL        = "https://api.openai.com/v1/chat/completions"
-OPENAI_MODEL      = os.getenv("OPENAI_MODEL", "gpt-4o")
-OPENAI_PLAN_MODEL = os.getenv("OPENAI_PLAN_MODEL", "gpt-4o-mini")  # 規劃用的輕量模型
+OPENAI_PLAN_MODEL = os.getenv("OPENAI_PLAN_MODEL", "gpt-4o-mini")
 
 # ----------------------------------------------------------
 # 🔧 工具定義
@@ -105,18 +110,9 @@ async def think_agentic(
     """
     三步驟 Agentic loop：
 
-    Step 1 — Gemini Flash 規劃
-      輸入：最近幾條對話 + 當前訊息
-      輸出：{
-        "need_tools": ["tool_name", ...],   # 要用的工具，可以空
-        "topic_to_expand": "...",           # 值得深入的話題，可以空
-        "approach": "..."                   # 回覆方向（一句話）
-      }
-
+    Step 1 — OpenAI (gpt-4o-mini) 規劃
     Step 2 — 執行工具（只跑規劃指定的）
-
-    Step 3 — DeepSeek 生成
-      把規劃思路 + 工具結果一起注入，生成最終回覆
+    Step 3 — DeepSeek 生成最終回覆
 
     Returns:
       (reply, tool_log, plan)
@@ -124,7 +120,7 @@ async def think_agentic(
     tool_log = []
     plan     = {}
 
-    # ── Step 1：Gemini 規劃 ───────────────────────────────
+    # ── Step 1：OpenAI 規劃 ───────────────────────────────
     plan = await _openai_plan(messages, tools_enabled)
     logger.info(f"[agentic] 規劃結果: {plan}")
 
@@ -134,7 +130,6 @@ async def think_agentic(
         for tool_name in plan["need_tools"]:
             if tool_name not in TOOL_NAMES:
                 continue
-            # 推斷工具參數（簡單版：從最後一條 user 訊息提取）
             last_user = next(
                 (m["content"] for m in reversed(messages) if m["role"] == "user"),
                 ""
@@ -145,11 +140,9 @@ async def think_agentic(
             tool_context += f"\n[工具結果 - {tool_name}]\n{result}\n"
 
     # ── Step 3：DeepSeek 生成 ─────────────────────────────
-    # 把規劃思路注入到 system 最後
     plan_injection = _build_plan_injection(plan, tool_context)
     messages_with_plan = messages.copy()
 
-    # 在最後一條 user 訊息之前插入規劃注入
     if plan_injection:
         messages_with_plan = messages[:-1] + [
             {"role": "system", "content": plan_injection},
@@ -162,15 +155,15 @@ async def think_agentic(
     max_tokens     = max_tokens_map.get(length_mode, 600)
 
     payload = {
-        "model":             OPENAI_MODEL,
+        "model":             DEEPSEEK_MODEL,
         "messages":          messages_with_plan,
-        "temperature":       1.25,
+        "temperature":       1.4,
         "max_tokens":        max_tokens,
         "presence_penalty":  0.6,
         "frequency_penalty": 0.2,
     }
 
-    response = await _call_api(payload)
+    response = await _call_deepseek_api(payload)
     if response is None:
         return "(連線中斷，請稍後再試)", tool_log, plan
 
@@ -202,8 +195,6 @@ def _build_plan_injection(plan: dict, tool_context: str) -> str:
 def _infer_tool_args(tool_name: str, user_text: str) -> dict:
     """從 user 訊息簡單推斷工具參數"""
     if tool_name == "get_weather":
-        # 嘗試從 user 文字中提取城市名
-        # 先用常見城市快速匹配，匹配不到就把整段 user 文字交給 geocoding 處理
         import re
         common_cities = [
             "台北", "新北", "桃園", "台中", "台南", "高雄", "新竹", "基隆",
@@ -217,8 +208,6 @@ def _infer_tool_args(tool_name: str, user_text: str) -> dict:
         for city in common_cities:
             if city.lower() in user_text.lower():
                 return {"city": city}
-        # 提取可能的地名（在「天氣」等關鍵字前後找名詞）
-        # fallback: 把 user 文字中最可能的部分交給 geocoding
         weather_match = re.search(r'([\w]+)(?:的?天氣|氣溫|溫度|weather)', user_text)
         if weather_match:
             return {"city": weather_match.group(1)}
@@ -231,7 +220,7 @@ def _infer_tool_args(tool_name: str, user_text: str) -> dict:
 
 
 # ----------------------------------------------------------
-# 🌐 OpenAI 輕量規劃（取代 Gemini Flash）
+# 🌐 OpenAI 規劃（gpt-4o-mini）
 # ----------------------------------------------------------
 async def _openai_plan(messages: list, tools_enabled: bool) -> dict:
     """
@@ -242,7 +231,6 @@ async def _openai_plan(messages: list, tools_enabled: bool) -> dict:
     if not OPENAI_API_KEY:
         return {}
 
-    # 取最近 6 條
     recent = messages[-6:] if len(messages) > 6 else messages
     convo  = "\n".join(
         f"{'User' if m['role'] == 'user' else 'Lilith' if m['role'] == 'assistant' else 'System'}: "
@@ -299,12 +287,9 @@ async def _openai_plan(messages: list, tools_enabled: bool) -> dict:
         text = text.replace("```json", "").replace("```", "").strip()
         plan = json.loads(text)
 
-        # 驗證格式
         plan.setdefault("need_tools", [])
         plan.setdefault("topic_to_expand", "")
         plan.setdefault("approach", "")
-
-        # 過濾無效工具名
         plan["need_tools"] = [t for t in plan["need_tools"] if t in TOOL_NAMES]
 
         return plan
@@ -327,9 +312,9 @@ async def think(
     tool_calls_log = []
 
     payload = {
-        "model":             OPENAI_MODEL,
+        "model":             DEEPSEEK_MODEL,
         "messages":          messages,
-        "temperature":       1.25,
+        "temperature":       1.4,
         "max_tokens":        max_tokens,
         "presence_penalty":  0.6,
         "frequency_penalty": 0.2,
@@ -338,7 +323,7 @@ async def think(
         payload["tools"]       = TOOL_DEFINITIONS
         payload["tool_choice"] = "auto"
 
-    response = await _call_api(payload)
+    response = await _call_deepseek_api(payload)
     if response is None:
         return "(連線中斷，請稍後再試)", []
 
@@ -365,14 +350,14 @@ async def think(
         *tool_results,
     ]
     final_payload = {
-        "model":             OPENAI_MODEL,
+        "model":             DEEPSEEK_MODEL,
         "messages":          messages_with_results,
-        "temperature":       0.95,
+        "temperature":       1.25,
         "max_tokens":        max_tokens,
         "presence_penalty":  0.6,
         "frequency_penalty": 0.2,
     }
-    final_response = await _call_api(final_payload)
+    final_response = await _call_deepseek_api(final_payload)
     if final_response is None:
         return "(工具執行完畢，但生成回覆時發生錯誤)", tool_calls_log
 
@@ -390,9 +375,9 @@ async def think_stream(
     max_tokens     = max_tokens_map.get(length_mode, 600)
 
     payload = {
-        "model":             OPENAI_MODEL,
+        "model":             DEEPSEEK_MODEL,
         "messages":          messages,
-        "temperature":       1.0,
+        "temperature":       1.4,
         "max_tokens":        max_tokens,
         "presence_penalty":  0.6,
         "frequency_penalty": 0.2,
@@ -402,13 +387,13 @@ async def think_stream(
     }
     headers = {
         "Content-Type":  "application/json",
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
     }
 
     tool_calls_acc = {}
 
     async with httpx.AsyncClient(timeout=90) as client:
-        async with client.stream("POST", OPENAI_URL, headers=headers, json=payload) as resp:
+        async with client.stream("POST", DEEPSEEK_URL, headers=headers, json=payload) as resp:
             if resp.status_code != 200:
                 yield "(連線失敗)"
                 return
@@ -462,9 +447,9 @@ async def think_stream(
             *tool_results,
         ]
         payload2 = {
-            "model":             OPENAI_MODEL,
+            "model":             DEEPSEEK_MODEL,
             "messages":          messages2,
-            "temperature":       0.95,
+            "temperature":       1.25,
             "max_tokens":        max_tokens,
             "presence_penalty":  0.6,
             "frequency_penalty": 0.2,
@@ -472,7 +457,7 @@ async def think_stream(
         }
         async with httpx.AsyncClient(timeout=90) as client:
             async with client.stream(
-                "POST", OPENAI_URL, headers=headers, json=payload2
+                "POST", DEEPSEEK_URL, headers=headers, json=payload2
             ) as resp2:
                 async for line in resp2.aiter_lines():
                     if not line.startswith("data: "):
@@ -521,23 +506,22 @@ async def _execute_tool(fn_name: str, fn_args: dict) -> str:
 # ----------------------------------------------------------
 _MAX_RETRIES = 3
 
-async def _call_api(payload: dict) -> Optional[dict]:
+async def _call_deepseek_api(payload: dict) -> Optional[dict]:
     headers = {
         "Content-Type":  "application/json",
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
     }
     for attempt in range(_MAX_RETRIES):
         try:
             async with httpx.AsyncClient(timeout=60) as client:
-                res = await client.post(OPENAI_URL, headers=headers, json=payload)
+                res = await client.post(DEEPSEEK_URL, headers=headers, json=payload)
             if res.status_code == 200:
                 return res.json()
-            logger.error(f"[brain] API 錯誤: {res.status_code} {res.text[:200]}")
-            # 5xx 錯誤才重試
+            logger.error(f"[brain] DeepSeek API 錯誤: {res.status_code} {res.text[:200]}")
             if res.status_code < 500:
                 return None
         except Exception as e:
-            logger.error(f"[brain] API 呼叫失敗 (attempt {attempt+1}): {e}")
+            logger.error(f"[brain] DeepSeek API 呼叫失敗 (attempt {attempt+1}): {e}")
         if attempt < _MAX_RETRIES - 1:
-            await asyncio.sleep(2 ** attempt)  # 1s, 2s backoff
+            await asyncio.sleep(2 ** attempt)
     return None
