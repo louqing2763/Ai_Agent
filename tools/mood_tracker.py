@@ -11,6 +11,7 @@ tools/mood_tracker.py — 情緒狀態追蹤
   - 清除短期記憶，準備新的一天
 """
 
+import os
 import json
 import asyncio
 import logging
@@ -20,13 +21,14 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
+DEEPSEEK_URL   = "https://api.deepseek.com/v1/chat/completions"
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 
 
 # ----------------------------------------------------------
 # 😶 推斷今日情緒
 # ----------------------------------------------------------
-async def update_mood_today(redis_client, chat_id: int, deepseek_key: str):
+async def update_mood_today(redis_client, chat_id: int, llm_key: str):
     """
     讀取今天的對話歷史，呼叫 DeepSeek 推斷情緒，
     結果存入 Redis lilith:mood_today（TTL 36 小時）
@@ -56,7 +58,7 @@ async def update_mood_today(redis_client, chat_id: int, deepseek_key: str):
     )
 
     payload = {
-        "model":       "deepseek-chat",
+        "model":       DEEPSEEK_MODEL,
         "messages":    [{"role": "user", "content": prompt}],
         "temperature": 0.7,
         "max_tokens":  150,
@@ -64,7 +66,7 @@ async def update_mood_today(redis_client, chat_id: int, deepseek_key: str):
 
     headers = {
         "Content-Type":  "application/json",
-        "Authorization": f"Bearer {deepseek_key}",
+        "Authorization": f"Bearer {llm_key}",
     }
 
     try:
@@ -101,7 +103,7 @@ async def update_mood_today(redis_client, chat_id: int, deepseek_key: str):
 # ----------------------------------------------------------
 # 📓 生成每日摘要
 # ----------------------------------------------------------
-async def generate_daily_summary(redis_client, chat_id: int, deepseek_key: str):
+async def generate_daily_summary(redis_client, chat_id: int, llm_key: str):
     """
     凌晨呼叫：
       1. 根據今天的對話生成摘要，存入長期記憶
@@ -131,7 +133,7 @@ async def generate_daily_summary(redis_client, chat_id: int, deepseek_key: str):
     )
 
     payload = {
-        "model":       "deepseek-chat",
+        "model":       DEEPSEEK_MODEL,
         "messages":    [{"role": "user", "content": prompt}],
         "temperature": 0.8,
         "max_tokens":  200,
@@ -139,7 +141,7 @@ async def generate_daily_summary(redis_client, chat_id: int, deepseek_key: str):
 
     headers = {
         "Content-Type":  "application/json",
-        "Authorization": f"Bearer {deepseek_key}",
+        "Authorization": f"Bearer {llm_key}",
     }
 
     try:

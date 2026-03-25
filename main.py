@@ -105,7 +105,7 @@ def run_discord():
         token        = DISCORD_TOKEN,
         admin_id     = ADMIN_ID,
         redis_client = redis_client,
-        deepseek_key = DEEPSEEK_API_KEY,
+        llm_key      = DEEPSEEK_API_KEY,
     ))
 
 def _discord_watchdog():
@@ -141,7 +141,7 @@ def run_web():
     app = create_app(
         admin_id     = ADMIN_ID,
         redis_client = redis_client,
-        deepseek_key = DEEPSEEK_API_KEY,
+        llm_key      = DEEPSEEK_API_KEY,
     )
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning")
 
