@@ -98,7 +98,6 @@ async def generate_reply(
             "給出他自己沒想到的角度。你的深度體現在分析的銳利，不是感受的渲染。"
             "如果不是具體問題，而是開放話題或情感時刻，才展開你自己的思考和感受。"
             "重的東西說完就繼續，不等掌聲。"
-            "這個模式下你有足夠的空間展開——不要自己縮短，把想說的說完。"
         ),
         "normal": (
             "（OOC·系統）"
@@ -390,8 +389,51 @@ async def start_discord(token: str, admin_id: int, redis_client, deepseek_key: s
         except Exception as e:
             key_count = f"錯誤: {e}"
 
-        # 檢查 FT.SEARCH count
+        # 檢查 FT.SEARCH count（帶 chat_id 過濾）
         n = count(redis_client, admin_id)
+
+        # 不帶過濾的搜索（確認索引本身能不能用）
+        raw_count = 0
+        samples = []
+        try:
+            raw_search = redis_client.execute_command(
+                "FT.SEARCH", "lilith_memory_idx", "*",
+                "RETURN", "2", "chat_id", "content",
+                "LIMIT", "0", "3",
+            )
+            raw_count = raw_search[0] if raw_search else 0
+            entries = raw_search[1:] if raw_search else []
+            for i in range(0, len(entries), 2):
+                if i + 1 < len(entries):
+                    raw_fields = entries[i + 1]
+                    fields = {}
+                    for j in range(0, len(raw_fields), 2):
+                        fields[raw_fields[j]] = raw_fields[j + 1]
+                    cid = fields.get("chat_id", "?")
+                    content = str(fields.get("content", "?"))[:40]
+                    samples.append(f"id={cid} | {content}")
+        except Exception as e:
+            raw_count = f"錯誤: {e}"
+
+        # 直接讀一筆 mem:* key 的原始資料
+        raw_key_info = "無"
+        try:
+            if keys and len(keys) > 0:
+                sample_key = keys[0]
+                if isinstance(sample_key, bytes):
+                    sample_key = sample_key.decode()
+                raw_data = redis_client.hgetall(sample_key)
+                raw_fields_list = []
+                for k, v in raw_data.items():
+                    kk = k.decode() if isinstance(k, bytes) else k
+                    if kk == "embedding":
+                        raw_fields_list.append(f"{kk}=[{len(v)} bytes]")
+                    else:
+                        vv = v.decode() if isinstance(v, bytes) else str(v)
+                        raw_fields_list.append(f"{kk}={vv[:30]}")
+                raw_key_info = f"key={sample_key} → {', '.join(raw_fields_list)}"
+        except Exception as e:
+            raw_key_info = f"錯誤: {e}"
 
         # 嘗試手動存一筆測試
         test_result = "未測試"
@@ -402,18 +444,26 @@ async def start_discord(token: str, admin_id: int, redis_client, deepseek_key: s
         except Exception as e:
             test_result = f"❌ 寫入例外: {e}"
 
-        # 再次檢查
         keys_after = redis_client.keys("mem:*")
         key_after_count = len(keys_after) if keys_after else 0
 
-        await ctx.send(
+        msg1 = (
             f"🔍 **記憶 Debug**\n"
             f"索引：{idx_status}\n"
             f"mem:* keys（寫入前）：{key_count} 條\n"
-            f"FT.SEARCH count：{n} 條\n"
+            f"FT.SEARCH count（chat_id={admin_id}）：{n} 條\n"
+            f"FT.SEARCH count（無過濾）：{raw_count} 條\n"
             f"測試寫入：{test_result}\n"
             f"mem:* keys（寫入後）：{key_after_count} 條"
         )
+        msg2 = (
+            f"📋 **樣本資料**\n"
+            f"原始 key 內容：{raw_key_info}\n"
+            f"搜索樣本：{'  ||  '.join(samples[:3]) if samples else '無'}"
+        )
+
+        await ctx.send(msg1)
+        await ctx.send(msg2)
 
     # ── 心跳排程 ─────────────────────────────────────────
 
