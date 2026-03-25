@@ -98,6 +98,7 @@ async def generate_reply(
             "給出他自己沒想到的角度。你的深度體現在分析的銳利，不是感受的渲染。"
             "如果不是具體問題，而是開放話題或情感時刻，才展開你自己的思考和感受。"
             "重的東西說完就繼續，不等掌聲。"
+            "這個模式下你有足夠的空間展開——不要自己縮短，把想說的說完。"
         ),
         "normal": (
             "（OOC·系統）"
@@ -276,6 +277,7 @@ async def start_discord(token: str, admin_id: int, redis_client, deepseek_key: s
             "`!len short|normal|long|auto` — 切換模式\n"
             "`!status` — 系統狀態\n"
             "`!care` — 測試主動關心\n"
+            "`!debug` — 記憶系統診斷\n"
         )
 
     @bot.command(name="len")
@@ -368,6 +370,50 @@ async def start_discord(token: str, admin_id: int, redis_client, deepseek_key: s
     def load_state_helper(chat_id, rc):
         from core.redis_store import load_state
         return load_state(chat_id, rc)
+
+    @bot.command(name="debug")
+    async def cmd_debug(ctx):
+        if not is_admin_dm(ctx): return
+        from memory.long_term import ensure_index, count
+
+        # 檢查索引
+        try:
+            info = redis_client.execute_command("FT.INFO", "lilith_memory_idx")
+            idx_status = "✅ 索引存在"
+        except Exception as e:
+            idx_status = f"❌ 索引不存在: {e}"
+
+        # 檢查 keys
+        try:
+            keys = redis_client.keys("mem:*")
+            key_count = len(keys) if keys else 0
+        except Exception as e:
+            key_count = f"錯誤: {e}"
+
+        # 檢查 FT.SEARCH count
+        n = count(redis_client, admin_id)
+
+        # 嘗試手動存一筆測試
+        test_result = "未測試"
+        try:
+            from memory.long_term import save as mem_save
+            ok = mem_save(redis_client, admin_id, "user", "debug test message for memory check")
+            test_result = f"✅ 寫入成功" if ok else f"❌ 寫入失敗（回傳 False）"
+        except Exception as e:
+            test_result = f"❌ 寫入例外: {e}"
+
+        # 再次檢查
+        keys_after = redis_client.keys("mem:*")
+        key_after_count = len(keys_after) if keys_after else 0
+
+        await ctx.send(
+            f"🔍 **記憶 Debug**\n"
+            f"索引：{idx_status}\n"
+            f"mem:* keys（寫入前）：{key_count} 條\n"
+            f"FT.SEARCH count：{n} 條\n"
+            f"測試寫入：{test_result}\n"
+            f"mem:* keys（寫入後）：{key_after_count} 條"
+        )
 
     # ── 心跳排程 ─────────────────────────────────────────
 
