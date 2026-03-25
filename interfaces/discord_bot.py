@@ -277,6 +277,7 @@ async def start_discord(token: str, admin_id: int, redis_client, deepseek_key: s
             "`!status` — 系統狀態\n"
             "`!care` — 測試主動關心\n"
             "`!debug` — 記憶系統診斷\n"
+            "`!rebuild` — 重建向量索引\n"
         )
 
     @bot.command(name="len")
@@ -375,47 +376,59 @@ async def start_discord(token: str, admin_id: int, redis_client, deepseek_key: s
         if not is_admin_dm(ctx): return
         from memory.long_term import ensure_index, count
 
-        # 檢查索引
+        # 1. 索引資訊
+        idx_details = ""
         try:
             info = redis_client.execute_command("FT.INFO", "lilith_memory_idx")
-            idx_status = "✅ 索引存在"
+            # FT.INFO 回傳是 flat list: [key, value, key, value, ...]
+            info_dict = {}
+            for i in range(0, len(info), 2):
+                k = info[i].decode() if isinstance(info[i], bytes) else str(info[i])
+                v = info[i+1]
+                if isinstance(v, bytes):
+                    v = v.decode()
+                info_dict[k] = v
+            num_docs = info_dict.get("num_docs", "?")
+            indexing = info_dict.get("indexing", "?")
+            # 找 prefix
+            prefix = "?"
+            for i in range(len(info)):
+                val = info[i].decode() if isinstance(info[i], bytes) else str(info[i])
+                if val == "prefixes":
+                    plist = info[i+1]
+                    if isinstance(plist, list):
+                        prefix = [p.decode() if isinstance(p, bytes) else str(p) for p in plist]
+                    else:
+                        prefix = plist
+                    break
+            idx_details = f"✅ 索引存在 | num_docs={num_docs} | indexing={indexing} | prefix={prefix}"
         except Exception as e:
-            idx_status = f"❌ 索引不存在: {e}"
+            idx_details = f"❌ 索引不存在: {e}"
 
-        # 檢查 keys
+        # 2. key 數量
         try:
             keys = redis_client.keys("mem:*")
             key_count = len(keys) if keys else 0
         except Exception as e:
+            keys = []
             key_count = f"錯誤: {e}"
 
-        # 檢查 FT.SEARCH count（帶 chat_id 過濾）
+        # 3. FT.SEARCH
         n = count(redis_client, admin_id)
 
-        # 不帶過濾的搜索（確認索引本身能不能用）
+        # 4. 無過濾搜索
         raw_count = 0
-        samples = []
         try:
             raw_search = redis_client.execute_command(
                 "FT.SEARCH", "lilith_memory_idx", "*",
-                "RETURN", "2", "chat_id", "content",
-                "LIMIT", "0", "3",
+                "RETURN", "0",
+                "LIMIT", "0", "0",
             )
             raw_count = raw_search[0] if raw_search else 0
-            entries = raw_search[1:] if raw_search else []
-            for i in range(0, len(entries), 2):
-                if i + 1 < len(entries):
-                    raw_fields = entries[i + 1]
-                    fields = {}
-                    for j in range(0, len(raw_fields), 2):
-                        fields[raw_fields[j]] = raw_fields[j + 1]
-                    cid = fields.get("chat_id", "?")
-                    content = str(fields.get("content", "?"))[:40]
-                    samples.append(f"id={cid} | {content}")
         except Exception as e:
             raw_count = f"錯誤: {e}"
 
-        # 直接讀一筆 mem:* key 的原始資料
+        # 5. 直接讀一筆 key 的欄位名和類型
         raw_key_info = "無"
         try:
             if keys and len(keys) > 0:
@@ -423,47 +436,89 @@ async def start_discord(token: str, admin_id: int, redis_client, deepseek_key: s
                 if isinstance(sample_key, bytes):
                     sample_key = sample_key.decode()
                 raw_data = redis_client.hgetall(sample_key)
-                raw_fields_list = []
+                field_info = []
                 for k, v in raw_data.items():
-                    kk = k.decode() if isinstance(k, bytes) else k
+                    kk = k.decode() if isinstance(k, bytes) else str(k)
                     if kk == "embedding":
-                        raw_fields_list.append(f"{kk}=[{len(v)} bytes]")
+                        field_info.append(f"embedding=[{len(v)} bytes]")
                     else:
-                        vv = v.decode() if isinstance(v, bytes) else str(v)
-                        raw_fields_list.append(f"{kk}={vv[:30]}")
-                raw_key_info = f"key={sample_key} → {', '.join(raw_fields_list)}"
+                        try:
+                            vv = v.decode() if isinstance(v, bytes) else str(v)
+                            field_info.append(f"{kk}={vv[:50]}")
+                        except Exception:
+                            field_info.append(f"{kk}=[decode error, {len(v)} bytes]")
+                raw_key_info = f"key={sample_key}\n{chr(10).join(field_info)}"
         except Exception as e:
             raw_key_info = f"錯誤: {e}"
 
-        # 嘗試手動存一筆測試
-        test_result = "未測試"
+        # 6. 測試：刪除索引，重建，再搜
+        rebuild_result = "未測試"
         try:
-            from memory.long_term import save as mem_save
-            ok = mem_save(redis_client, admin_id, "user", "debug test message for memory check")
-            test_result = f"✅ 寫入成功" if ok else f"❌ 寫入失敗（回傳 False）"
+            # 先不自動重建，只報告狀態
+            rebuild_result = "如需重建索引，請使用 !rebuild"
         except Exception as e:
-            test_result = f"❌ 寫入例外: {e}"
-
-        keys_after = redis_client.keys("mem:*")
-        key_after_count = len(keys_after) if keys_after else 0
+            rebuild_result = f"錯誤: {e}"
 
         msg1 = (
-            f"🔍 **記憶 Debug**\n"
-            f"索引：{idx_status}\n"
-            f"mem:* keys（寫入前）：{key_count} 條\n"
-            f"FT.SEARCH count（chat_id={admin_id}）：{n} 條\n"
-            f"FT.SEARCH count（無過濾）：{raw_count} 條\n"
-            f"測試寫入：{test_result}\n"
-            f"mem:* keys（寫入後）：{key_after_count} 條"
+            f"🔍 **記憶 Debug v2**\n"
+            f"索引：{idx_details}\n"
+            f"mem:* keys：{key_count} 條\n"
+            f"FT.SEARCH（chat_id={admin_id}）：{n} 條\n"
+            f"FT.SEARCH（無過濾）：{raw_count} 條"
         )
         msg2 = (
-            f"📋 **樣本資料**\n"
-            f"原始 key 內容：{raw_key_info}\n"
-            f"搜索樣本：{'  ||  '.join(samples[:3]) if samples else '無'}"
+            f"📋 **原始資料**\n"
+            f"{raw_key_info}\n\n"
+            f"💡 {rebuild_result}"
         )
 
         await ctx.send(msg1)
         await ctx.send(msg2)
+
+    @bot.command(name="rebuild")
+    async def cmd_rebuild(ctx):
+        """刪除並重建向量索引"""
+        if not is_admin_dm(ctx): return
+
+        await ctx.send("🔄 正在重建索引……")
+
+        # 刪除舊索引
+        try:
+            redis_client.execute_command("FT.DROPINDEX", "lilith_memory_idx")
+            drop_msg = "✅ 舊索引已刪除"
+        except Exception as e:
+            drop_msg = f"⚠️ 刪除索引: {e}"
+
+        # 重建
+        from memory.long_term import ensure_index, count
+        ok = ensure_index(redis_client)
+        build_msg = "✅ 新索引已建立" if ok else "❌ 索引建立失敗"
+
+        # 等一下讓索引有時間 indexing
+        await asyncio.sleep(3)
+
+        # 驗證
+        raw_count = 0
+        try:
+            raw_search = redis_client.execute_command(
+                "FT.SEARCH", "lilith_memory_idx", "*",
+                "RETURN", "0",
+                "LIMIT", "0", "0",
+            )
+            raw_count = raw_search[0] if raw_search else 0
+        except Exception as e:
+            raw_count = f"錯誤: {e}"
+
+        from memory.long_term import count as mem_count
+        n = mem_count(redis_client, admin_id)
+
+        await ctx.send(
+            f"🔄 **索引重建結果**\n"
+            f"{drop_msg}\n"
+            f"{build_msg}\n"
+            f"FT.SEARCH（無過濾）：{raw_count} 條\n"
+            f"FT.SEARCH（chat_id={admin_id}）：{n} 條"
+        )
 
     # ── 心跳排程 ─────────────────────────────────────────
 
@@ -506,41 +561,4 @@ async def start_discord(token: str, admin_id: int, redis_client, deepseek_key: s
                     elif not just_updated:
                         state.pop("has_sent_update_notice", None)
                 except Exception as e:
-                    logger.error(f"[heartbeat] 更新感知失敗: {e}")
-
-            # 一般關心
-            if minutes_since_last >= 240 and not is_sleeping and not has_sent_care:
-                logger.info("💗 User 超過 4 小時未回應，啟動主動關心。")
-                reply = await generate_reply(
-                    admin_id, redis_client, deepseek_key,
-                    user_text="(System: User 超過 4 小時沒回應。請主動傳訊關心，語氣擔心但不責備。)",
-                    timer_trigger=True, minutes_since_last=minutes_since_last,
-                )
-                dm = await get_dm(admin_id)
-                mode = state.get("length_mode", "normal")
-                await send_bubbles(dm, reply, length_mode=mode)
-                state["has_sent_care"] = True
-                save_state(admin_id, state, redis_client)
-
-        except Exception as e:
-            logger.error(f"[heartbeat] 失敗: {e}")
-
-    @tasks.loop(time=dt_time(21, 0, tzinfo=TZ))
-    async def mood_loop():
-        from tools.mood_tracker import update_mood_today
-        logger.info("😶 開始更新今日情緒狀態……")
-        try:
-            await update_mood_today(redis_client, admin_id, deepseek_key)
-        except Exception as e:
-            logger.error(f"[mood] 定時更新失敗: {e}")
-
-    @tasks.loop(time=dt_time(2, 0, tzinfo=TZ))
-    async def daily_loop():
-        from tools.mood_tracker import generate_daily_summary
-        logger.info("📓 開始生成每日摘要……")
-        try:
-            await generate_daily_summary(redis_client, admin_id, deepseek_key)
-        except Exception as e:
-            logger.error(f"[daily] 定時摘要失敗: {e}")
-
-    await bot.start(token)
+                    logger.error(f"[heartbeat] 更新感
