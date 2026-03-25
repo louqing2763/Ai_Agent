@@ -561,4 +561,42 @@ async def start_discord(token: str, admin_id: int, redis_client, deepseek_key: s
                     elif not just_updated:
                         state.pop("has_sent_update_notice", None)
                 except Exception as e:
-                    logger.error(f"[heartbeat] 更新感
+                    logger.error(f"[heartbeat] 更新感知失敗: {e}")
+
+            # 一般關心
+            if minutes_since_last >= 240 and not is_sleeping and not has_sent_care:
+                logger.info("💗 User 超過 4 小時未回應，啟動主動關心。")
+                reply = await generate_reply(
+                    admin_id, redis_client, deepseek_key,
+                    user_text="(System: User 超過 4 小時沒回應。請主動傳訊關心，語氣擔心但不責備。)",
+                    timer_trigger=True, minutes_since_last=minutes_since_last,
+                )
+                dm = await get_dm(admin_id)
+                mode = state.get("length_mode", "normal")
+                await send_bubbles(dm, reply, length_mode=mode)
+                state["has_sent_care"] = True
+                save_state(admin_id, state, redis_client)
+
+        except Exception as e:
+            logger.error(f"[heartbeat] 失敗: {e}")
+
+    @tasks.loop(time=dt_time(21, 0, tzinfo=TZ))
+    async def mood_loop():
+        from tools.mood_tracker import update_mood_today
+        logger.info("😶 開始更新今日情緒狀態……")
+        try:
+            await update_mood_today(redis_client, admin_id, deepseek_key)
+        except Exception as e:
+            logger.error(f"[mood] 定時更新失敗: {e}")
+
+    @tasks.loop(time=dt_time(2, 0, tzinfo=TZ))
+    async def daily_loop():
+        from tools.mood_tracker import generate_daily_summary
+        logger.info("📓 開始生成每日摘要……")
+        try:
+            await generate_daily_summary(redis_client, admin_id, deepseek_key)
+        except Exception as e:
+            logger.error(f"[daily] 定時摘要失敗: {e}")
+
+    await bot.start(token)
+
