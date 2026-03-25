@@ -19,7 +19,6 @@ import logging
 from typing import Optional, AsyncGenerator
 
 import httpx
-import requests
 
 VERSION_BRAIN = "3.0"
 logger = logging.getLogger(__name__)
@@ -204,14 +203,28 @@ def _build_plan_injection(plan: dict, tool_context: str) -> str:
 def _infer_tool_args(tool_name: str, user_text: str) -> dict:
     """從 user 訊息簡單推斷工具參數"""
     if tool_name == "get_weather":
-        # 嘗試提取城市名（簡單關鍵字匹配）
-        cities = ["台北", "台中", "高雄", "台南", "新竹", "東京", "Tokyo", "大阪"]
-        for city in cities:
-            if city in user_text:
+        # 嘗試從 user 文字中提取城市名
+        # 先用常見城市快速匹配，匹配不到就把整段 user 文字交給 geocoding 處理
+        import re
+        common_cities = [
+            "台北", "新北", "桃園", "台中", "台南", "高雄", "新竹", "基隆",
+            "嘉義", "屏東", "宜蘭", "花蓮", "台東", "苗栗", "彰化", "南投",
+            "雲林", "澎湖", "金門", "馬祖",
+            "東京", "大阪", "京都", "首爾", "新加坡", "曼谷", "吉隆坡",
+            "香港", "上海", "北京", "深圳", "紐約", "倫敦", "巴黎",
+            "Tokyo", "Osaka", "Seoul", "Singapore", "Bangkok",
+            "Hong Kong", "Shanghai", "Beijing", "New York", "London", "Paris",
+        ]
+        for city in common_cities:
+            if city.lower() in user_text.lower():
                 return {"city": city}
+        # 提取可能的地名（在「天氣」等關鍵字前後找名詞）
+        # fallback: 把 user 文字中最可能的部分交給 geocoding
+        weather_match = re.search(r'([\w]+)(?:的?天氣|氣溫|溫度|weather)', user_text)
+        if weather_match:
+            return {"city": weather_match.group(1)}
         return {"city": "台北"}
     elif tool_name == "search_news":
-        # 用 user 文字的前 30 字作為查詢
         return {"query": user_text[:30]}
     elif tool_name == "get_system_status":
         return {"detail": "all"}
@@ -272,13 +285,13 @@ async def _gemini_plan(messages: list, tools_enabled: bool) -> dict:
                 "maxOutputTokens": 200,
             },
         }
-        headers = {"Content-Type": "application/json"}
-        url     = f"{GEMINI_URL}?key={GEMINI_API_KEY}"
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": GEMINI_API_KEY,
+        }
 
-        res = await asyncio.to_thread(
-            requests.post, url,
-            headers=headers, json=payload, timeout=15,
-        )
+        async with httpx.AsyncClient(timeout=15) as client:
+            res = await client.post(GEMINI_URL, headers=headers, json=payload)
 
         if res.status_code != 200:
             logger.warning(f"[gemini] 規劃失敗: {res.status_code}")
@@ -506,22 +519,27 @@ async def _execute_tool(fn_name: str, fn_args: dict) -> str:
 
 
 # ----------------------------------------------------------
-# 🌐 DeepSeek API 呼叫（非串流）
+# 🌐 DeepSeek API 呼叫（非串流，含重試）
 # ----------------------------------------------------------
+_MAX_RETRIES = 3
+
 async def _call_api(payload: dict) -> Optional[dict]:
     headers = {
         "Content-Type":  "application/json",
         "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
     }
-    try:
-        res = await asyncio.to_thread(
-            requests.post, DEEPSEEK_URL,
-            headers=headers, json=payload, timeout=60,
-        )
-        if res.status_code == 200:
-            return res.json()
-        logger.error(f"[brain] API 錯誤: {res.status_code} {res.text[:200]}")
-        return None
-    except Exception as e:
-        logger.error(f"[brain] API 呼叫失敗: {e}")
-        return None
+    for attempt in range(_MAX_RETRIES):
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                res = await client.post(DEEPSEEK_URL, headers=headers, json=payload)
+            if res.status_code == 200:
+                return res.json()
+            logger.error(f"[brain] API 錯誤: {res.status_code} {res.text[:200]}")
+            # 5xx 錯誤才重試
+            if res.status_code < 500:
+                return None
+        except Exception as e:
+            logger.error(f"[brain] API 呼叫失敗 (attempt {attempt+1}): {e}")
+        if attempt < _MAX_RETRIES - 1:
+            await asyncio.sleep(2 ** attempt)  # 1s, 2s backoff
+    return None

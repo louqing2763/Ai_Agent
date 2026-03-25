@@ -9,6 +9,7 @@ interfaces/web_ui.py — FastAPI Web UI v5.0
   - 後端 API 與 v4.0 完全相同
 """
 
+import os
 import time
 import json
 import logging
@@ -17,16 +18,17 @@ from datetime import datetime
 from typing import Optional, AsyncGenerator
 
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Depends, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
-SOVITS_URL      = "http://127.0.0.1:9880/tts"
-SOVITS_REF_WAV  = "C:/wav_ready/vo_cn_lilith_606.wav"
-SOVITS_PROMPT   = "这是负担最小的做法了，你很快就会没事的"
+SOVITS_URL      = os.environ.get("SOVITS_URL", "http://127.0.0.1:9880/tts")
+SOVITS_REF_WAV  = os.environ.get("SOVITS_REF_WAV", "/app/wav_ready/vo_cn_lilith_606.wav")
+SOVITS_PROMPT   = os.environ.get("SOVITS_PROMPT", "这是负担最小的做法了，你很快就会没事的")
 
 # ----------------------------------------------------------
 # 📦 Request 模型
@@ -50,6 +52,16 @@ class PersonaBlock(BaseModel):
     time_rules:     Optional[str] = None
     absence_rules:  Optional[str] = None
     news_rules:     Optional[str] = None
+
+WEB_AUTH_TOKEN = os.environ.get("WEB_AUTH_TOKEN", "")
+_security = HTTPBearer(auto_error=False)
+
+async def _check_auth(credentials: HTTPAuthorizationCredentials = Depends(_security)):
+    """若設定了 WEB_AUTH_TOKEN 環境變數，則要求 Bearer Token 驗證。"""
+    if not WEB_AUTH_TOKEN:
+        return  # 未設定 token 時不驗證（向下相容）
+    if credentials is None or credentials.credentials != WEB_AUTH_TOKEN:
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 PERSONA_KEY = "lilith:persona_full_template"
 
@@ -95,7 +107,8 @@ def _get_default_blocks() -> dict:
 # 🏗️ App 工廠
 # ----------------------------------------------------------
 def create_app(admin_id: int, redis_client, deepseek_key: str) -> FastAPI:
-    app = FastAPI(title="Lilith", version="5.0")
+    # GET / (HTML 頁面) 不需要驗證，其他 API 端點需要
+    app = FastAPI(title="Lilith", version="5.1")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
@@ -105,10 +118,10 @@ def create_app(admin_id: int, redis_client, deepseek_key: str) -> FastAPI:
     async def index():
         return _html()
 
-    @app.post("/chat")
+    @app.post("/chat", dependencies=[Depends(_check_auth)])
     async def chat(req: ChatRequest):
         from core.redis_store import load_state, save_state
-        from interfaces.telegram_bot import generate_reply
+        from interfaces.discord_bot import generate_reply
 
         state = load_state(admin_id, redis_client)
         if req.length_mode in ["short","normal","long"]:
@@ -132,7 +145,7 @@ def create_app(admin_id: int, redis_client, deepseek_key: str) -> FastAPI:
             "timestamp":   datetime.now().strftime("%H:%M"),
         })
 
-    @app.post("/chat/stream")
+    @app.post("/chat/stream", dependencies=[Depends(_check_auth)])
     async def chat_stream(req: StreamRequest):
         from core.redis_store import load_state, save_state, load_history, save_history
         from core.persona_config import get_persona
@@ -194,13 +207,13 @@ def create_app(admin_id: int, redis_client, deepseek_key: str) -> FastAPI:
             "prompt_text": SOVITS_PROMPT, "prompt_lang": "zh", "text_lang": "zh",
         })
 
-    @app.get("/history")
+    @app.get("/history", dependencies=[Depends(_check_auth)])
     async def history():
         from core.redis_store import load_history
         h = load_history(admin_id, redis_client)
         return JSONResponse({"history": h, "count": len(h)})
 
-    @app.get("/status")
+    @app.get("/status", dependencies=[Depends(_check_auth)])
     async def status():
         from core.redis_store import load_state, load_history
         from memory.long_term import count
@@ -218,7 +231,7 @@ def create_app(admin_id: int, redis_client, deepseek_key: str) -> FastAPI:
             "long_term_count":  n_long,
         })
 
-    @app.post("/settings")
+    @app.post("/settings", dependencies=[Depends(_check_auth)])
     async def save_settings(req: SettingsRequest):
         from core.redis_store import load_state, save_state
         state = load_state(admin_id, redis_client)
@@ -227,7 +240,7 @@ def create_app(admin_id: int, redis_client, deepseek_key: str) -> FastAPI:
             save_state(admin_id, state, redis_client)
         return JSONResponse({"ok": True})
 
-    @app.post("/reset")
+    @app.post("/reset", dependencies=[Depends(_check_auth)])
     async def reset():
         from core.redis_store import save_history, save_state
         save_history(admin_id, [], redis_client)
@@ -237,9 +250,9 @@ def create_app(admin_id: int, redis_client, deepseek_key: str) -> FastAPI:
         }, redis_client)
         return JSONResponse({"ok": True})
 
-    @app.post("/care")
+    @app.post("/care", dependencies=[Depends(_check_auth)])
     async def trigger_care():
-        from interfaces.telegram_bot import generate_reply
+        from interfaces.discord_bot import generate_reply
         reply = await generate_reply(
             chat_id=admin_id, redis_client=redis_client,
             deepseek_key=deepseek_key,
@@ -248,13 +261,13 @@ def create_app(admin_id: int, redis_client, deepseek_key: str) -> FastAPI:
         )
         return JSONResponse({"ok": True, "reply": reply})
 
-    @app.get("/persona")
+    @app.get("/persona", dependencies=[Depends(_check_auth)])
     async def get_persona_ep():
         overrides = _load_persona_blocks(redis_client)
         defaults  = _get_default_blocks()
         return JSONResponse({k: overrides.get(k, defaults.get(k, "")) for k in defaults})
 
-    @app.post("/persona")
+    @app.post("/persona", dependencies=[Depends(_check_auth)])
     async def save_persona(blocks: PersonaBlock):
         current  = _load_persona_blocks(redis_client)
         incoming = {k: v for k, v in blocks.dict().items() if v is not None}
@@ -262,7 +275,7 @@ def create_app(admin_id: int, redis_client, deepseek_key: str) -> FastAPI:
         _save_persona_blocks(redis_client, current)
         return JSONResponse({"ok": True, "message": "Persona 已套用"})
 
-    @app.post("/persona/reset")
+    @app.post("/persona/reset", dependencies=[Depends(_check_auth)])
     async def reset_persona():
         if redis_client:
             try:

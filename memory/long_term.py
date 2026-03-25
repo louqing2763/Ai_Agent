@@ -18,8 +18,8 @@ Embedding 使用本地 sentence-transformers，完全免費，無需 API Key。
 
 import os
 import time
+import uuid
 import logging
-import hashlib
 import asyncio
 from typing import Optional
 
@@ -31,6 +31,9 @@ KEY_PREFIX      = "mem"
 MIN_RELEVANCE   = 0.75
 MAX_RECALL      = 4
 MIN_CONTENT_LEN = 10
+
+# 索引狀態快取（避免每次呼叫 FT.INFO）
+_index_ensured  = False
 
 # 模型單例（首次呼叫時載入，之後快取）
 _embed_model = None
@@ -67,26 +70,40 @@ def _embed(text: str) -> Optional[list]:
 
 
 # ----------------------------------------------------------
+# 🔗 取得 raw Redis 連線（不帶 decode_responses，適合向量操作）
+# ----------------------------------------------------------
+def _get_raw_redis():
+    """優先使用 raw 連線，避免 decode_responses 與 binary 向量衝突。"""
+    from core.redis_store import get_raw_redis
+    return get_raw_redis()
+
+
+# ----------------------------------------------------------
 # 🗂️ Redis 索引初始化
 # ----------------------------------------------------------
 def ensure_index(redis_client) -> bool:
     """
     確保向量索引存在。
     Redis 8 使用 FT.CREATE 建立 HNSW 向量索引。
-    若索引已存在則跳過。
+    若索引已存在則跳過。結果會被快取。
     """
+    global _index_ensured
+    if _index_ensured:
+        return True
     if redis_client is None:
         return False
+
+    raw = _get_raw_redis() or redis_client
     try:
-        # 檢查索引是否存在
-        redis_client.execute_command("FT.INFO", INDEX_NAME)
+        raw.execute_command("FT.INFO", INDEX_NAME)
+        _index_ensured = True
         return True
     except Exception:
         pass
 
     # 建立索引
     try:
-        redis_client.execute_command(
+        raw.execute_command(
             "FT.CREATE", INDEX_NAME,
             "ON", "HASH",
             "PREFIX", "1", f"{KEY_PREFIX}:",
@@ -101,10 +118,17 @@ def ensure_index(redis_client) -> bool:
                 "DISTANCE_METRIC", "COSINE",
         )
         logger.info(f"[memory] Redis 向量索引 '{INDEX_NAME}' 建立成功")
+        _index_ensured = True
         return True
     except Exception as e:
         logger.error(f"[memory] 建立索引失敗: {e}")
         return False
+
+
+def reset_index_cache():
+    """重置索引快取（用於 !rebuild 指令後）。"""
+    global _index_ensured
+    _index_ensured = False
 
 
 # ----------------------------------------------------------
@@ -138,25 +162,27 @@ def save(redis_client, chat_id: int, role: str, content: str) -> bool:
     if vector is None:
         return False
 
-    # 建立唯一 ID（防重複）
+    # 建立唯一 ID（使用 uuid4 避免碰撞）
     ts     = int(time.time())
-    uid    = hashlib.md5(f"{chat_id}:{role}:{ts}:{content[:50]}".encode()).hexdigest()[:12]
+    uid    = uuid.uuid4().hex[:16]
     key    = f"{KEY_PREFIX}:{uid}"
 
     # 轉成 Redis 可存的格式
     import struct
     vector_bytes = struct.pack(f"{EMBED_DIM}f", *vector)
 
+    # 使用 raw 連線（不帶 decode_responses）以正確處理 binary 向量
+    raw = _get_raw_redis() or redis_client
     try:
-        redis_client.hset(key, mapping={
+        raw.hset(key, mapping={
             "chat_id":   str(chat_id),
             "role":      role,
-            "ts":        ts,
+            "ts":        str(ts),
             "content":   content[:500],    # 最多存 500 字
             "embedding": vector_bytes,
         })
         # 設定 TTL：記憶保留 90 天
-        redis_client.expire(key, 86400 * 90)
+        raw.expire(key, 86400 * 90)
         logger.debug(f"[memory] 已存入: {key}")
         return True
     except Exception as e:
@@ -185,9 +211,10 @@ def recall(redis_client, chat_id: int, query: str, top_k: int = MAX_RECALL) -> s
     import struct
     q_bytes = struct.pack(f"{EMBED_DIM}f", *q_vector)
 
+    raw = _get_raw_redis() or redis_client
     try:
         # KNN 向量搜尋（只搜此 chat 的記憶）
-        results = redis_client.execute_command(
+        results = raw.execute_command(
             "FT.SEARCH", INDEX_NAME,
             f"(@chat_id:{{{chat_id}}})=>[KNN {top_k} @embedding $vec AS score]",
             "PARAMS", "2", "vec", q_bytes,
@@ -207,12 +234,15 @@ def recall(redis_client, chat_id: int, query: str, top_k: int = MAX_RECALL) -> s
     total   = results[0]
     entries = results[1:]
 
+    def _decode(val):
+        return val.decode() if isinstance(val, bytes) else str(val)
+
     fragments = []
     for i in range(0, len(entries), 2):
         fields = {}
-        raw    = entries[i + 1]
-        for j in range(0, len(raw), 2):
-            fields[raw[j]] = raw[j + 1]
+        raw_fields = entries[i + 1]
+        for j in range(0, len(raw_fields), 2):
+            fields[_decode(raw_fields[j])] = _decode(raw_fields[j + 1])
 
         score   = float(fields.get("score", 1.0))
         relevance = 1.0 - score   # cosine distance → similarity
@@ -244,21 +274,19 @@ def delete_all(redis_client, chat_id: int) -> int:
     """刪除某 chat 的所有長期記憶，回傳刪除條數。"""
     if redis_client is None:
         return 0
+    raw = _get_raw_redis() or redis_client
     try:
-        results = redis_client.execute_command(
+        results = raw.execute_command(
             "FT.SEARCH", INDEX_NAME,
             f"@chat_id:{{{chat_id}}}",
             "RETURN", "0",
             "LIMIT", "0", "1000",
         )
-        # FT.SEARCH 回傳格式：[總數, key1, [], key2, [], ...]
-        # key 在奇數位置（index 1, 3, 5...），fields 在偶數位置
         total = results[0]
-        keys = results[1::2]   # key1, key2, ...（跳過 fields）
-        # 過濾掉非 bytes/str 的元素（fields 是 list，key 是 bytes）
+        keys = results[1::2]
         keys = [k for k in keys if isinstance(k, (str, bytes))]
         if keys:
-            redis_client.delete(*keys)
+            raw.delete(*keys)
         return len(keys)
     except Exception as e:
         logger.error(f"[memory] 刪除失敗: {e}")
@@ -269,8 +297,9 @@ def count(redis_client, chat_id: int) -> int:
     """回傳某 chat 的長期記憶條數。"""
     if redis_client is None:
         return 0
+    raw = _get_raw_redis() or redis_client
     try:
-        results = redis_client.execute_command(
+        results = raw.execute_command(
             "FT.SEARCH", INDEX_NAME,
             f"@chat_id:{{{chat_id}}}",
             "RETURN", "0",

@@ -16,7 +16,7 @@ import asyncio
 import logging
 from datetime import datetime
 
-import requests
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -68,10 +68,8 @@ async def update_mood_today(redis_client, chat_id: int, deepseek_key: str):
     }
 
     try:
-        res = await asyncio.to_thread(
-            requests.post, DEEPSEEK_URL,
-            headers=headers, json=payload, timeout=30
-        )
+        async with httpx.AsyncClient(timeout=30) as client:
+            res = await client.post(DEEPSEEK_URL, headers=headers, json=payload)
         if res.status_code != 200:
             logger.error(f"[mood] API 錯誤: {res.status_code}")
             return
@@ -145,10 +143,8 @@ async def generate_daily_summary(redis_client, chat_id: int, deepseek_key: str):
     }
 
     try:
-        res = await asyncio.to_thread(
-            requests.post, DEEPSEEK_URL,
-            headers=headers, json=payload, timeout=30
-        )
+        async with httpx.AsyncClient(timeout=30) as client:
+            res = await client.post(DEEPSEEK_URL, headers=headers, json=payload)
         if res.status_code != 200:
             logger.error(f"[daily] API 錯誤: {res.status_code}")
             return

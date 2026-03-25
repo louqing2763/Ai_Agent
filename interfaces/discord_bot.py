@@ -489,8 +489,9 @@ async def start_discord(token: str, admin_id: int, redis_client, deepseek_key: s
         except Exception as e:
             drop_msg = f"⚠️ 刪除索引: {e}"
 
-        # 重建
-        from memory.long_term import ensure_index, count
+        # 重建（先重置快取）
+        from memory.long_term import ensure_index, count, reset_index_cache
+        reset_index_cache()
         ok = ensure_index(redis_client)
         build_msg = "✅ 新索引已建立" if ok else "❌ 索引建立失敗"
 
