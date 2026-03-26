@@ -261,7 +261,7 @@ async def _openai_plan(messages: list, tools_enabled: bool) -> dict:
 說明：
 - need_tools: 這次回覆需要呼叫的工具名稱列表（空列表代表不需要）
 - topic_to_expand: 對話裡有沒有值得深入探討的話題或情緒？用一句話描述，沒有就留空
-- approach: 這次回覆的方向，用一句話描述（例如：「User 說了很重的話，先接住情緒再說別的」），沒有特別的就留空
+- approach: 這次回覆的話題方向，用一句話描述。只管「聊什麼」，不管「怎麼聊」。不要給情緒處理建議——情緒回應由回覆者自己決定。沒有特別的就留空
 """
 
     try:
