@@ -152,8 +152,11 @@ async def think_agentic(
         ]
 
     max_tokens_map = {"short": 150, "normal": 600, "long": 2500, "auto": 1200}
-    max_tokens     = max_tokens_map.get(length_mode, 600)
-
+    if length_mode == "auto" and plan.get("response_length"):
+        max_tokens = max_tokens_map.get(plan["response_length"], 600)
+    else:
+        max_tokens = max_tokens_map.get(length_mode, 600)
+      
     payload = {
         "model":             DEEPSEEK_MODEL,
         "messages":          messages_with_plan,
@@ -255,13 +258,15 @@ async def _openai_plan(messages: list, tools_enabled: bool) -> dict:
 {{
   "need_tools": [],
   "topic_to_expand": "",
-  "approach": ""
+  "approach": "",
+  "response_length": "normal"
 }}
 
 說明：
 - need_tools: 這次回覆需要呼叫的工具名稱列表（空列表代表不需要）
 - topic_to_expand: 對話裡有沒有值得深入探討的話題或情緒？用一句話描述，沒有就留空
 - approach: 這次回覆的話題方向，用一句話描述。只管「聊什麼」，不管「怎麼聊」。不要給情緒處理建議——情緒回應由回覆者自己決定。沒有特別的就留空
+- response_length: 回覆長度。"short"=簡短回應（打招呼、是/否、閒聊附和）、"normal"=一般對話、"long"=需要詳細解釋或深入討論。根據 User 的訊息複雜度決定，不是根據話題重要性。
 """
 
     try:
